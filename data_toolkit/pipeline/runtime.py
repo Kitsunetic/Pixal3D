@@ -1146,31 +1146,10 @@ class FrozenReferenceCounter:
 
     def _shard_directories(self, source: str) -> tuple[Path, ...]:
         root = self.config.paths.data2_root / "control/shards" / source
-        try:
-            root_fd = _open_directory_nofollow(root)
-        except (OSError, InfrastructureError) as error:
-            raise ArtifactValidationError(
-                f"missing or unsafe frozen shard root: {root}: {error}"
-            ) from error
-        try:
-            names = sorted(os.listdir(root_fd))
-            result = []
-            for name in names:
-                _component(name, "frozen shard")
-                try:
-                    value = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
-                except OSError as error:
-                    raise ArtifactValidationError(
-                        f"cannot inspect frozen shard: {name}: {error}"
-                    ) from error
-                if not stat.S_ISDIR(value.st_mode):
-                    raise ArtifactValidationError(
-                        f"non-directory in frozen shard root: {name}"
-                    )
-                result.append(root / name)
-            return tuple(result)
-        finally:
-            os.close(root_fd)
+        return tuple(
+            root / name
+            for name in _frozen_shard_names(root, "frozen shard root")
+        )
 
     def _frozen_batches(self, source: str, root: Path):
         shard = root.name

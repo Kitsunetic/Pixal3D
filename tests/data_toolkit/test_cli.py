@@ -2693,6 +2693,33 @@ def test_reference_counter_preserves_shared_zip_until_final_frozen_batch(
     )
 
 
+def test_reference_counter_accepts_lock_for_existing_frozen_shard(tmp_config):
+    config = load_config_with_github(tmp_config)
+    source = "ObjaverseXL_github"
+    asset = "a" * 64
+    raw_path = "raw/github/repos/repo.zip"
+    shard = f"{source}-00000"
+    write_reference_index(config, source, ((asset, shard, raw_path),))
+    write_frozen_batch(config, source, shard, "batch000", (asset,))
+    lock = (
+        config.paths.data2_root
+        / "control/shards"
+        / source
+        / f".{shard}.freeze.lock"
+    )
+    lock.touch()
+
+    assert (
+        FrozenReferenceCounter(config).pending_references(
+            source,
+            raw_path,
+            excluding_shard_id="other",
+            excluding_batch_id="batch999",
+        )
+        == 1
+    )
+
+
 def test_reference_counter_rejects_corrupt_frozen_manifest(tmp_config):
     config = load_config_with_github(tmp_config)
     source = "ObjaverseXL_github"
