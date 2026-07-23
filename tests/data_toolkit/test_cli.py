@@ -30,6 +30,7 @@ from data_toolkit.pipeline.runtime import (
     build_mutating_services,
     read_gate_report,
     read_parallelism_report,
+    refresh_gate_evidence,
     validate_family_memberships,
 )
 from test_reporting import CONFIG_HASH, valid_report_payload
@@ -608,6 +609,65 @@ def test_gate_telemetry_can_predate_fresh_evidence_manifest(tmp_config):
     report_path, _ = RuntimeReportBuilder(config)("production")
 
     assert json.loads(report_path.read_text())["decision"] == "passed"
+
+
+def test_refresh_gate_evidence_renews_a_verified_stale_manifest(tmp_config):
+    config = load_config(tmp_config)
+    write_complete_gate_evidence(config, "pilot")
+    report_path, _ = RuntimeReportBuilder(config)("pilot")
+    manifest_path = (
+        config.paths.data2_root / "control/report_inputs/pilot.json"
+    )
+    stale = (
+        datetime.now(timezone.utc) - timedelta(days=2)
+    ).isoformat()
+    manifest = json.loads(manifest_path.read_text())
+    manifest["created_at"] = stale
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":"))
+    )
+    report = json.loads(report_path.read_text())
+    report["created_at"] = stale
+    report["evidence"]["manifest_sha256"] = sha256(
+        manifest_path.read_bytes()
+    ).hexdigest()
+    report_path.write_text(json.dumps(report))
+    hardware_input = (
+        config.paths.data2_root / "control/report_inputs/hardware.json"
+    )
+    hardware_input.write_text(json.dumps(valid_hardware_payload(config)))
+    RuntimeReportBuilder(config)(None, True)
+    with pytest.raises(ArtifactValidationError, match="fresh"):
+        read_gate_report(config, "pilot")
+
+    refresh_gate_evidence(config, "pilot")
+
+    assert read_gate_report(config, "pilot")["decision"] == "passed"
+    assert (
+        datetime.now(timezone.utc)
+        - datetime.fromisoformat(
+            json.loads(manifest_path.read_text())["created_at"]
+        )
+    ) < timedelta(minutes=1)
+
+
+def test_pilot_reader_caches_validated_production_capacity(tmp_config):
+    config = load_config(tmp_config)
+    write_complete_gate_evidence(config, "pilot")
+    RuntimeReportBuilder(config)("pilot")
+    reader = PilotArtifactReader(config)
+
+    assert reader.p95_peak_local_bytes("ABO") == 100
+    manifest_path = (
+        config.paths.data2_root / "control/report_inputs/pilot.json"
+    )
+    manifest = json.loads(manifest_path.read_text())
+    manifest["created_at"] = (
+        datetime.now(timezone.utc) - timedelta(days=2)
+    ).isoformat()
+    manifest_path.write_text(json.dumps(manifest))
+
+    assert reader.p95_peak_local_bytes("HSSD") == 100
 
 
 def test_smoke_gate_requires_zero_schema_failures(tmp_config):
@@ -1425,6 +1485,33 @@ def test_evidence_command_does_not_initialize_mutating_runtime(
         ("init", load_config(tmp_config).config_hash()),
         ("collect", "smoke"),
     ]
+    assert capsys.readouterr().out.splitlines() == [str(path) for path in paths]
+
+
+def test_evidence_refresh_renews_held_artifacts_without_collecting_runtime(
+    tmp_config, monkeypatch, capsys
+):
+    calls = []
+    paths = tuple(tmp_config.parent / f"refreshed-{index}" for index in range(2))
+
+    monkeypatch.setattr(
+        "data_toolkit.pipeline.cli.refresh_gate_evidence",
+        lambda config, gate: calls.append((config.config_hash(), gate)) or paths,
+    )
+    monkeypatch.setattr(
+        "data_toolkit.pipeline.cli.GateEvidenceCollector",
+        lambda config: pytest.fail("refresh collected live runtime evidence"),
+    )
+
+    assert main([
+        "evidence",
+        "--config",
+        str(tmp_config),
+        "--gate",
+        "pilot",
+        "--refresh",
+    ]) == 0
+    assert calls == [(load_config(tmp_config).config_hash(), "pilot")]
     assert capsys.readouterr().out.splitlines() == [str(path) for path in paths]
 
 

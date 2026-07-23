@@ -76,6 +76,7 @@ class ProductionWorkQueue:
         self.history_root = self.root / "history"
         self.completed_root = self.root / "completed"
         self.failed_root = self.root / "failed"
+        self.remediated_root = self.root / "remediated"
 
     def initialize(
         self,
@@ -107,6 +108,7 @@ class ProductionWorkQueue:
             self.history_root,
             self.completed_root,
             self.failed_root,
+            self.remediated_root,
         ):
             path.mkdir(parents=True, exist_ok=True)
         _write_json(self.manifest_path, manifest)
@@ -405,6 +407,57 @@ class ProductionWorkQueue:
                 "token": "adopted",
                 "attempt": 0,
                 "completed_at": _timestamp(now),
+            },
+        )
+
+    def retry_failed(
+        self,
+        unit_ids: tuple[str, ...],
+        *,
+        incident_id: str,
+        now: datetime,
+    ) -> None:
+        _identifier(incident_id, "incident id")
+        _aware(now)
+        requested = tuple(unit_ids)
+        if not requested or len(requested) != len(set(requested)):
+            raise ValueError("failed retry scope must be non-empty and unique")
+        known = {unit.unit_id: unit for unit in self.units()}
+        for unit_id in requested:
+            _identifier(unit_id, "work unit id")
+            try:
+                unit = known[unit_id]
+            except KeyError as error:
+                raise ValueError(f"unknown production work unit: {unit_id}") from error
+            if self._read_lease(unit) is not None:
+                raise ValueError(f"cannot retry leased work unit: {unit_id}")
+            if self._completion_path(unit).is_file():
+                raise ValueError(f"cannot retry completed work unit: {unit_id}")
+            if not (self.failed_root / f"{unit_id}.json").is_file():
+                raise ValueError(f"work unit is not terminally failed: {unit_id}")
+
+        incident_root = self.remediated_root / incident_id
+        if incident_root.exists() or incident_root.is_symlink():
+            raise ValueError(f"remediation incident already exists: {incident_id}")
+        incident_root.mkdir(parents=True)
+        for unit_id in requested:
+            unit_root = incident_root / unit_id
+            history_root = unit_root / "history"
+            history_root.mkdir(parents=True)
+            (self.failed_root / f"{unit_id}.json").rename(
+                unit_root / "failed.json"
+            )
+            prefix = f"{unit_id}."
+            for path in tuple(self.history_root.iterdir()):
+                if path.is_dir() and path.name.startswith(prefix):
+                    path.rename(history_root / path.name)
+        _write_json(
+            incident_root / "incident.json",
+            {
+                "schema_version": QUEUE_SCHEMA_VERSION,
+                "incident_id": incident_id,
+                "retried_at": _timestamp(now),
+                "unit_ids": list(requested),
             },
         )
 

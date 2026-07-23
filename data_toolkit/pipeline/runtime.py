@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import datetime, timezone
+import fcntl
 from hashlib import sha256
 import io
 import json
@@ -10,6 +11,7 @@ import os
 from pathlib import Path, PurePosixPath
 import stat
 import tarfile
+import threading
 import time
 from typing import Callable, Mapping
 from urllib.parse import urlsplit
@@ -513,14 +515,23 @@ class CanonicalRegistryBuilder:
 
 
 def read_gate_report(
-    config: PipelineConfig, gate: str, *, require_passed: bool = True
+    config: PipelineConfig,
+    gate: str,
+    *,
+    require_passed: bool = True,
+    require_fresh: bool = True,
 ) -> dict:
     _component(gate, "gate")
     if gate not in {"smoke", "pilot", "production"}:
         raise ArtifactValidationError(f"unknown gate: {gate}")
     path = config.paths.data2_root / "control/reports/gates" / f"{gate}.json"
     published = _safe_json(path, f"{gate} gate report")
-    derived, handoff, handoff_payload = RuntimeReportBuilder(config)._derive_gate(gate)
+    builder = RuntimeReportBuilder(config)
+    derived, handoff, handoff_payload = (
+        builder._derive_gate(gate)
+        if require_fresh
+        else builder._derive_gate(gate, require_fresh=False)
+    )
     if published != derived:
         raise ArtifactValidationError(
             f"{gate} gate report does not match held evidence"
@@ -542,6 +553,82 @@ def read_gate_report(
     if require_passed and derived["decision"] != "passed":
         raise ArtifactValidationError(f"{gate} gate has not passed")
     return derived
+
+
+def refresh_gate_evidence(
+    config: PipelineConfig,
+    gate: str,
+    *,
+    now: datetime | None = None,
+) -> tuple[Path, Path]:
+    _component(gate, "gate")
+    if gate not in {"smoke", "pilot"}:
+        raise ArtifactValidationError(
+            "only smoke and pilot evidence may be refreshed"
+        )
+    report_path = (
+        config.paths.data2_root / "control/reports/gates" / f"{gate}.json"
+    )
+    published = _safe_json(report_path, f"{gate} gate report")
+    derived, _, _ = RuntimeReportBuilder(config)._derive_gate(
+        gate, require_fresh=False
+    )
+    try:
+        published_identity = (
+            published["schema_version"],
+            published["gate"],
+            published["config_hash"],
+            published["decision"],
+            published["evidence"]["manifest_sha256"],
+        )
+        derived_identity = (
+            derived["schema_version"],
+            derived["gate"],
+            derived["config_hash"],
+            derived["decision"],
+            derived["evidence"]["manifest_sha256"],
+        )
+    except (KeyError, TypeError) as error:
+        raise ArtifactValidationError(
+            f"invalid {gate} gate report identity"
+        ) from error
+    if (
+        published_identity[:-2] != derived_identity[:-2]
+        or published_identity[-1] != derived_identity[-1]
+        or published_identity[-2] != "passed"
+        or derived_identity[-2] != "passed"
+    ):
+        raise ArtifactValidationError(
+            f"{gate} gate is not eligible for evidence refresh"
+        )
+    manifest_path = (
+        config.paths.data2_root / "control/report_inputs" / f"{gate}.json"
+    )
+    payload = _read_regular_bytes_nofollow(manifest_path)
+    if sha256(payload).hexdigest() != published["evidence"]["manifest_sha256"]:
+        raise ArtifactValidationError(
+            f"{gate} evidence manifest changed during refresh"
+        )
+    try:
+        manifest = json.loads(payload)
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise ArtifactValidationError(
+            f"invalid {gate} evidence manifest: {error}"
+        ) from error
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None or current.utcoffset() is None:
+        raise ValueError("gate refresh timestamp must be timezone-aware")
+    manifest["created_at"] = current.astimezone(timezone.utc).isoformat()
+    _atomic_write_bytes_nofollow(
+        manifest_path,
+        json.dumps(
+            manifest,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8"),
+    )
+    return RuntimeReportBuilder(config)(gate)
 
 
 def read_parallelism_report(
@@ -669,7 +756,7 @@ def _major_minor_at_least(value: str, minimum: tuple[int, int]) -> bool:
         return False
 
 
-def _fresh_timestamp(value, description: str, *, now=None) -> str:
+def _evidence_timestamp(value, description: str) -> datetime:
     if not isinstance(value, str):
         raise ArtifactValidationError(f"{description} timestamp must be a string")
     try:
@@ -678,11 +765,16 @@ def _fresh_timestamp(value, description: str, *, now=None) -> str:
         raise ArtifactValidationError(f"invalid {description} timestamp") from error
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ArtifactValidationError(f"{description} timestamp must be timezone-aware")
+    return parsed.astimezone(timezone.utc)
+
+
+def _fresh_timestamp(value, description: str, *, now=None) -> str:
+    parsed = _evidence_timestamp(value, description)
     current = now or datetime.now(timezone.utc)
-    age = (current - parsed.astimezone(timezone.utc)).total_seconds()
+    age = (current - parsed).total_seconds()
     if age < -300 or age > 24 * 60 * 60:
         raise ArtifactValidationError(f"{description} evidence is not fresh")
-    return parsed.astimezone(timezone.utc).isoformat()
+    return parsed.isoformat()
 
 
 def _held_timestamp(value, description: str, *, now=None) -> str:
@@ -919,6 +1011,7 @@ def read_hardware_report(config: PipelineConfig, *, require_passed=True) -> dict
 class PilotArtifactReader:
     def __init__(self, config: PipelineConfig):
         self.config = config
+        self._production_sources: Mapping | None = None
 
     def p95_peak_local_bytes(self, source: str) -> int:
         return self.p95_peak_local_bytes_for_gate(source, "production")
@@ -934,19 +1027,21 @@ class PilotArtifactReader:
                 "sources"
             ]
         elif gate == "production":
-            pilot_path = (
-                self.config.paths.data2_root
-                / "control/reports/gates/pilot.json"
-            )
-            pilot_value = _optional_json(pilot_path, "pilot gate report")
-            if pilot_value is not None:
-                sources = read_gate_report(self.config, "pilot")["capacity"][
-                    "sources"
-                ]
-            else:
-                sources = read_hardware_report(self.config)["pilot_sizing"][
-                    "sources"
-                ]
+            if self._production_sources is None:
+                pilot_path = (
+                    self.config.paths.data2_root
+                    / "control/reports/gates/pilot.json"
+                )
+                pilot_value = _optional_json(pilot_path, "pilot gate report")
+                if pilot_value is not None:
+                    self._production_sources = read_gate_report(
+                        self.config, "pilot"
+                    )["capacity"]["sources"]
+                else:
+                    self._production_sources = read_hardware_report(
+                        self.config
+                    )["pilot_sizing"]["sources"]
+            sources = self._production_sources
         else:
             raise ValueError(f"unknown sizing gate: {gate}")
         try:
@@ -1509,7 +1604,8 @@ class NoFollowTelemetryWriter:
         if not stat.S_ISREG(os.fstat(file_fd).st_mode):
             os.close(file_fd)
             raise ArtifactValidationError(f"telemetry is not a file: {self.path}")
-        self._stream = os.fdopen(file_fd, "a", encoding="utf-8")
+        self._stream = os.fdopen(file_fd, "wb", buffering=0)
+        self._write_lock = threading.Lock()
         self._clock = clock
         self._sync_interval = float(sync_interval)
         if not math.isfinite(self._sync_interval) or self._sync_interval <= 0:
@@ -1519,8 +1615,14 @@ class NoFollowTelemetryWriter:
         self._closed = False
 
     def _sync(self) -> None:
-        self._stream.flush()
-        os.fsync(self._stream.fileno())
+        with self._write_lock:
+            descriptor = self._stream.fileno()
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            try:
+                self._stream.flush()
+                os.fsync(descriptor)
+            finally:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
         self._last_sync = self._clock()
 
     def write(self, snapshot, decision, shard_id, command) -> None:
@@ -1538,7 +1640,21 @@ class NoFollowTelemetryWriter:
             action=decision.action.value,
             reasons=decision.reasons,
         )
-        self._stream.write(json.dumps(payload, sort_keys=True) + "\n")
+        encoded = (
+            json.dumps(payload, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        with self._write_lock:
+            descriptor = self._stream.fileno()
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            try:
+                remaining = memoryview(encoded)
+                while remaining:
+                    written = os.write(descriptor, remaining)
+                    if written <= 0:
+                        raise OSError("telemetry append made no progress")
+                    remaining = remaining[written:]
+            finally:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
         if self._clock() - self._last_sync >= self._sync_interval:
             self._sync()
 
@@ -1878,7 +1994,12 @@ def validate_family_memberships(
         )
 
 
-def _gate_candidate(config: PipelineConfig, gate: str) -> tuple[dict, str, dict[str, bytes]]:
+def _gate_candidate(
+    config: PipelineConfig,
+    gate: str,
+    *,
+    require_fresh: bool = True,
+) -> tuple[dict, str, dict[str, bytes]]:
     path = config.paths.data2_root / "control/report_inputs" / f"{gate}.json"
     try:
         payload = _read_regular_bytes_nofollow(path)
@@ -1901,7 +2022,13 @@ def _gate_candidate(config: PipelineConfig, gate: str) -> tuple[dict, str, dict[
         or value["gate"] != gate
     ):
         raise ArtifactValidationError(f"invalid {gate} evidence identity")
-    created_at = _fresh_timestamp(value["created_at"], f"{gate} gate")
+    created_at = (
+        _fresh_timestamp(value["created_at"], f"{gate} gate")
+        if require_fresh
+        else _evidence_timestamp(
+            value["created_at"], f"{gate} gate"
+        ).isoformat()
+    )
     artifacts = value["artifacts"]
     if not isinstance(artifacts, Mapping) or set(artifacts) != {
         "measurements_sha256",
@@ -2385,8 +2512,10 @@ class RuntimeReportBuilder:
         except ReportValidationError as error:
             raise ArtifactValidationError(f"invalid gate telemetry: {error}") from error
 
-    def _derive_gate(self, gate: str):
-        candidate, candidate_sha, payloads = _gate_candidate(self.config, gate)
+    def _derive_gate(self, gate: str, *, require_fresh: bool = True):
+        candidate, candidate_sha, payloads = _gate_candidate(
+            self.config, gate, require_fresh=require_fresh
+        )
         training_store = SafeRegistryStore(
             self.config.paths.data2_root / "control/assets.parquet", self.config
         )

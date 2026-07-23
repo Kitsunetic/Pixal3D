@@ -36,6 +36,7 @@ from .runtime import (
     build_read_only_services,
     read_gate_report,
     read_parallelism_report,
+    refresh_gate_evidence,
 )
 from .validation import ValidationError
 from .production_worker import ProductionWorker
@@ -153,6 +154,9 @@ def parser() -> argparse.ArgumentParser:
         children.choices[name].add_argument(
             "--gate", choices=GATES, required=True
         )
+    children.choices["evidence"].add_argument(
+        "--refresh", action="store_true"
+    )
     for name in ("plan", "run"):
         children.choices[name].add_argument(
             "--count", type=_positive_integer
@@ -543,7 +547,12 @@ def _dispatch(args, config) -> int:
         return SUCCESS
 
     if args.command == "evidence":
-        for path in GateEvidenceCollector(config).collect(args.gate):
+        paths = (
+            refresh_gate_evidence(config, args.gate)
+            if args.refresh
+            else GateEvidenceCollector(config).collect(args.gate)
+        )
+        for path in paths:
             print(path)
         return SUCCESS
 

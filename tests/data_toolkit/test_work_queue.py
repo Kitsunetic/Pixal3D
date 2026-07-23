@@ -260,6 +260,45 @@ def test_released_unit_retries_then_becomes_terminal_failure(tmp_path):
     assert queue.status(now=NOW + timedelta(minutes=4))["failed"] == 1
 
 
+def test_retry_failed_preserves_incident_evidence_and_resets_attempts(tmp_path):
+    queue = ProductionWorkQueue(
+        tmp_path, lease_timeout=timedelta(minutes=5), max_attempts=1
+    )
+    unit = units()[0]
+    queue.initialize("a" * 64, (unit,), now=NOW)
+    lease = queue.claim("node17", now=NOW, token="expired-gate")
+    queue.release(
+        lease,
+        reason="pilot gate evidence is not fresh",
+        now=NOW + timedelta(seconds=1),
+    )
+
+    queue.retry_failed(
+        (unit.unit_id,),
+        incident_id="pilot-gate-expired-20260723",
+        now=NOW + timedelta(minutes=1),
+    )
+
+    incident = (
+        tmp_path
+        / "remediated"
+        / "pilot-gate-expired-20260723"
+        / unit.unit_id
+    )
+    assert not (queue.failed_root / f"{unit.unit_id}.json").exists()
+    assert (
+        incident / "failed.json"
+    ).read_text().find("pilot gate evidence is not fresh") >= 0
+    assert len(tuple((incident / "history").iterdir())) == 1
+    replacement = queue.claim(
+        "node16",
+        now=NOW + timedelta(minutes=2),
+        token="replacement",
+    )
+    assert replacement is not None
+    assert replacement.attempt == 1
+
+
 def test_adopt_completed_marks_verified_legacy_batch(tmp_path):
     queue = ProductionWorkQueue(tmp_path, lease_timeout=timedelta(minutes=5))
     queue.initialize("a" * 64, units()[:1], now=NOW)

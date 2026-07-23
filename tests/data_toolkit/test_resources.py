@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from data_toolkit.pipeline import resources
+from data_toolkit.pipeline.runtime import NoFollowTelemetryWriter
 from data_toolkit.pipeline.resources import (
     GpuMetric,
     ProjectStorageAccounting,
@@ -741,6 +742,32 @@ def test_telemetry_serializes_iso_timestamp_and_syncs_every_thirty_seconds(
     assert records[0]["command"] == "download"
     assert records[0]["action"] == "run"
     assert "monotonic_seconds" not in records[0]
+
+
+def test_no_follow_telemetry_publishes_each_shared_append_immediately(tmp_path):
+    now = datetime(2026, 7, 16, 12, 30, tzinfo=timezone.utc)
+    path = tmp_path / "telemetry.jsonl"
+    first = NoFollowTelemetryWriter(
+        path, clock=lambda: 0.0, sync_interval=3600
+    )
+    second = NoFollowTelemetryWriter(
+        path, clock=lambda: 0.0, sync_interval=3600
+    )
+    decision = ResourceDecision(ResourceAction.RUN, ())
+
+    first.write(sample(now), decision, "ABO-00000", "download")
+    second.write(sample(now), decision, "HSSD-00000", "download")
+
+    records = [
+        __import__("json").loads(line)
+        for line in path.read_text().splitlines()
+    ]
+    assert [record["shard_id"] for record in records] == [
+        "ABO-00000",
+        "HSSD-00000",
+    ]
+    first.close()
+    second.close()
 
 
 def test_telemetry_close_closes_once_and_preserves_durability_failure(
