@@ -65,6 +65,10 @@ Only the `tool_commit` predicate changes:
 1. The current runtime commit is always accepted, as before.
 2. For the production gate only, an original manifest commit is accepted when
    it is listed in the valid compatibility attestation.
+   The exact `reviewed_against_commit` is also accepted as the trust anchor
+   against which those listed historical deltas were reviewed. This preserves
+   baseline outputs after the verifier implementation itself advances the
+   runtime commit.
 3. Smoke and pilot remain strict and never use compatibility evidence.
 4. Missing or invalid compatibility evidence does not broaden admission.
 

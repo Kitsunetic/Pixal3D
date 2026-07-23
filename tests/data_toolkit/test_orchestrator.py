@@ -3484,17 +3484,20 @@ def compatibility_verifier(config, context, asset_sha):
     return services
 
 
-def test_production_pack_accepts_attested_historical_tool_commit_without_mutation(
-    isolated_config, tmp_path
+@pytest.mark.parametrize(
+    "producer_commit",
+    (*sorted(APPROVED_HISTORICAL_COMMITS), REVIEW_BASELINE_COMMIT),
+)
+def test_production_pack_accepts_attested_producer_commit_without_mutation(
+    isolated_config, tmp_path, producer_commit
 ):
     context = ShardContext.for_test(
         tmp_path / "compatible-production-pack",
         "ABO",
         "ABO-00000",
     )
-    historical = sorted(APPROVED_HISTORICAL_COMMITS)[0]
     asset_sha = publish_compatibility_pack(
-        isolated_config, context, historical
+        isolated_config, context, producer_commit
     )
     write_output_compatibility(isolated_config)
     services = compatibility_verifier(

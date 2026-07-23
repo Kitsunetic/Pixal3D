@@ -21,7 +21,8 @@
 Cover:
 
 - missing evidence returns no approved historical commits;
-- a valid, exact artifact approves both reviewed commits;
+- a valid, exact artifact approves both reviewed commits and the exact review
+  baseline as their trust anchor;
 - unknown keys, duplicate commits, malformed/full-length commit hashes, an incorrect config hash, an incorrect pipeline version, a different review baseline, a changed-path digest mismatch, a non-empty output-affecting path list, a naive timestamp, and a symlinked artifact fail closed;
 - changed-path evidence is sorted and its digest is recomputed from newline-delimited paths;
 - the artifact reader never writes or modifies the evidence file.

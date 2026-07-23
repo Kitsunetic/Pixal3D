@@ -94,7 +94,7 @@ def test_exact_output_compatibility_attestation_is_accepted_without_mutation(
 
     assert (
         result.compatible_tool_commits
-        == APPROVED_HISTORICAL_COMMITS
+        == APPROVED_HISTORICAL_COMMITS | {REVIEW_BASELINE_COMMIT}
     )
     assert result.evidence_sha256 == sha256(before).hexdigest()
     assert path.read_bytes() == before

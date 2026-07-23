@@ -220,6 +220,6 @@ def load_output_compatibility(
         ) from error
     commits = _validate_payload(payload, config)
     return OutputCompatibility(
-        compatible_tool_commits=commits,
+        compatible_tool_commits=commits | {REVIEW_BASELINE_COMMIT},
         evidence_sha256=sha256(payload_bytes).hexdigest(),
     )
