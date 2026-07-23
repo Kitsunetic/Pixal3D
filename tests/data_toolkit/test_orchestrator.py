@@ -1,5 +1,6 @@
 from collections import defaultdict, deque
 from dataclasses import asdict, replace
+from datetime import datetime, timezone
 import ast
 import errno
 from hashlib import sha256
@@ -38,6 +39,10 @@ from data_toolkit.pipeline.orchestrator import (
     RollingQualityGate,
     build_services,
     plan_work_batches,
+)
+from data_toolkit.pipeline.output_compatibility import (
+    APPROVED_HISTORICAL_COMMITS,
+    REVIEW_BASELINE_COMMIT,
 )
 from data_toolkit.pipeline.packing import (
     PACK_FAMILIES,
@@ -3395,6 +3400,195 @@ def write_quality_checkpoint(services, context, outcomes):
     checkpoint.complete("validate_outputs")
     services.runner.save_checkpoint(services._checkpoint_path(context), checkpoint)
     return checkpoint
+
+
+def write_output_compatibility(config):
+    changed_paths = ["data_toolkit/pipeline/supervisor.py"]
+    changed_paths_sha256 = sha256(
+        "".join(f"{path}\n" for path in changed_paths).encode()
+    ).hexdigest()
+    payload = {
+        "schema_version": 1,
+        "artifact_type": "output_compatibility_attestation",
+        "config_hash": config.config_hash(),
+        "pipeline_version": "pixal3d-mv-v2",
+        "approved_at": datetime.now(timezone.utc).isoformat(),
+        "reviewed_against_commit": REVIEW_BASELINE_COMMIT,
+        "compatible_tool_commits": [
+            {
+                "tool_commit": commit,
+                "changed_paths": changed_paths,
+                "changed_paths_sha256": changed_paths_sha256,
+            }
+            for commit in sorted(APPROVED_HISTORICAL_COMMITS)
+        ],
+        "output_affecting_changed_paths": [],
+    }
+    path = config.paths.data2_root / "control/output_compatibility.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, sort_keys=True))
+    return path
+
+
+def publish_compatibility_pack(config, context, producer_commit):
+    asset_sha = "a" * 64
+    write_instances(context, (asset_sha,))
+    services = PipelineServices(
+        config,
+        resource_guard=FakeResourceGuard(),
+        project_accounting=FakeAccounting(),
+        tool_commit=producer_commit,
+    )
+    checkpoint = write_quality_checkpoint(
+        services, context, {asset_sha: "completed"}
+    )
+    services.runner.active_context = context
+    services.runner.active_checkpoint = checkpoint
+    included = services._family_included_assets(
+        (asset_sha,), context=context
+    )
+    members = services._pack_members_for_assets(context, included)
+    for family_members in members.values():
+        for relative in family_members:
+            path = context.output_root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(relative.as_posix().encode())
+    publish_pack(
+        config.paths.data2_root,
+        context.output_root,
+        members,
+        context.shard_id,
+        source=context.source,
+        batch_id=context.batch_id,
+        config_hash=config.config_hash(),
+        tool_commit=producer_commit,
+        asset_sha256s=(asset_sha,),
+        included_asset_sha256s_by_family=included,
+        gate=context.gate,
+    )
+    return asset_sha
+
+
+def compatibility_verifier(config, context, asset_sha):
+    services = PipelineServices(
+        config,
+        resource_guard=FakeResourceGuard(),
+        project_accounting=FakeAccounting(),
+        tool_commit="current-commit",
+    )
+    checkpoint = write_quality_checkpoint(
+        services, context, {asset_sha: "completed"}
+    )
+    services.runner.active_context = context
+    services.runner.active_checkpoint = checkpoint
+    return services
+
+
+def test_production_pack_accepts_attested_historical_tool_commit_without_mutation(
+    isolated_config, tmp_path
+):
+    context = ShardContext.for_test(
+        tmp_path / "compatible-production-pack",
+        "ABO",
+        "ABO-00000",
+    )
+    historical = sorted(APPROVED_HISTORICAL_COMMITS)[0]
+    asset_sha = publish_compatibility_pack(
+        isolated_config, context, historical
+    )
+    write_output_compatibility(isolated_config)
+    services = compatibility_verifier(
+        isolated_config, context, asset_sha
+    )
+    manifests = services._published_paths(context)[1::2]
+    before = {path: path.read_bytes() for path in manifests if path.exists()}
+
+    services._verify_published_batch(context)
+
+    assert {path: path.read_bytes() for path in before} == before
+
+
+def test_production_pack_rejects_historical_tool_commit_without_attestation(
+    isolated_config, tmp_path
+):
+    context = ShardContext.for_test(
+        tmp_path / "unattested-production-pack",
+        "ABO",
+        "ABO-00000",
+    )
+    historical = sorted(APPROVED_HISTORICAL_COMMITS)[0]
+    asset_sha = publish_compatibility_pack(
+        isolated_config, context, historical
+    )
+    services = compatibility_verifier(
+        isolated_config, context, asset_sha
+    )
+
+    with pytest.raises(ValidationError, match="frozen SHA"):
+        services._verify_published_batch(context)
+
+
+@pytest.mark.parametrize("gate", ("smoke", "pilot"))
+def test_qualification_pack_rejects_attested_historical_tool_commit(
+    isolated_config, tmp_path, gate
+):
+    context = ShardContext.for_test(
+        tmp_path / f"compatible-{gate}-pack",
+        "ABO",
+        "ABO-00000",
+        gate=gate,
+    )
+    historical = sorted(APPROVED_HISTORICAL_COMMITS)[0]
+    asset_sha = publish_compatibility_pack(
+        isolated_config, context, historical
+    )
+    write_output_compatibility(isolated_config)
+    services = compatibility_verifier(
+        isolated_config, context, asset_sha
+    )
+
+    with pytest.raises(ValidationError, match="frozen SHA"):
+        services._verify_published_batch(context)
+
+
+def test_production_raw_archive_accepts_attested_historical_tool_commit(
+    isolated_config,
+):
+    context = configured_context(isolated_config)
+    contents = b"compatible raw archive"
+    asset_sha = sha256(contents).hexdigest()
+    relative = "raw/models/item.glb"
+    source = context.source_root / relative
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(contents)
+    write_instances(context, (asset_sha,))
+    write_raw_metadata(
+        context, ({"sha256": asset_sha, "local_path": relative},)
+    )
+    historical = sorted(APPROVED_HISTORICAL_COMMITS)[0]
+    producer = PipelineServices(
+        isolated_config,
+        resource_guard=FakeResourceGuard(),
+        reference_counter=FakeReferenceCounter(1),
+        project_accounting=FakeAccounting(),
+        published_batch_verifier=lambda active_context: None,
+        tool_commit=historical,
+    )
+    checkpoint = write_quality_checkpoint(
+        producer, context, {asset_sha: "completed"}
+    )
+    producer.stage_raw(context)
+    producer.archive_raw(context)
+    write_output_compatibility(isolated_config)
+    verifier = compatibility_verifier(
+        isolated_config, context, asset_sha
+    )
+    _, manifest_path = verifier._raw_archive_paths(context)
+    before = manifest_path.read_bytes()
+
+    verifier._verify_raw_archive(context)
+
+    assert manifest_path.read_bytes() == before
 
 
 def test_pack_publication_uses_frozen_quality_admission_counts(

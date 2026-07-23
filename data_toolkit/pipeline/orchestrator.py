@@ -40,6 +40,10 @@ from .commands import (
     select_render_workers,
 )
 from .config import PipelineConfig
+from .output_compatibility import (
+    OutputCompatibilityValidationError,
+    load_output_compatibility,
+)
 from .packing import (
     PACK_FAMILIES,
     build_pack,
@@ -3799,6 +3803,20 @@ class PipelineServices:
         self._tool_commit = value
         return value
 
+    def _admissible_tool_commits(
+        self, context: ShardContext
+    ) -> frozenset[str]:
+        current = self._resolved_tool_commit()
+        if context.gate != "production":
+            return frozenset({current})
+        try:
+            compatibility = load_output_compatibility(self.config)
+        except OutputCompatibilityValidationError as error:
+            raise ValidationError(
+                f"invalid output compatibility attestation: {error}"
+            ) from error
+        return compatibility.compatible_tool_commits | {current}
+
     def _registry_shas(
         self, source: str, shard_id: str, count: int | None = None
     ) -> tuple[str, ...]:
@@ -5446,7 +5464,7 @@ class PipelineServices:
         shas, completed, _quarantined = self._quality_state(context)
         included = self._family_included_assets(completed, context=context)
         expected_members = self._pack_members_for_assets(context, included)
-        tool_commit = self._resolved_tool_commit()
+        admissible_tool_commits = self._admissible_tool_commits(context)
         prepared = self.config.paths.data2_root / "prepared"
         prefix = (
             Path()
@@ -5539,7 +5557,7 @@ class PipelineServices:
                     or manifest["batch_id"] != context.batch_id
                     or manifest["family"] != family
                     or manifest["config_hash"] != self.config.config_hash()
-                    or manifest["tool_commit"] != tool_commit
+                    or manifest["tool_commit"] not in admissible_tool_commits
                     or tuple(manifest["asset_sha256s"]) != shas
                     or manifest.get("schema_version") != 2
                     or tuple(manifest["included_asset_sha256s"])
@@ -5617,13 +5635,14 @@ class PipelineServices:
             raise ValidationError(
                 f"invalid raw archive member mapping: {manifest_path}"
             ) from error
+        admissible_tool_commits = self._admissible_tool_commits(context)
         if (
             manifest.get("shard_id") != context.shard_id
             or manifest.get("gate") != context.gate
             or manifest.get("batch_id") != context.batch_id
             or manifest.get("family") != "raw"
             or manifest.get("config_hash") != self.config.config_hash()
-            or manifest.get("tool_commit") != self._resolved_tool_commit()
+            or manifest.get("tool_commit") not in admissible_tool_commits
             or manifest.get("completed_count") != len(completed)
             or manifest.get("quarantined_count") != quarantined
             or manifest.get("schema_version") != 2
