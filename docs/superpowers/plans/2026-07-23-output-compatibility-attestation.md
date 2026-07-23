@@ -2,7 +2,7 @@
 
 > **For Codex:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Safely adopt the 1,489 usable ABO assets produced by the two reviewed historical tool commits while leaving every pack, raw archive, manifest, checksum, and provenance field unchanged.
+**Goal:** Safely adopt or preserve the 1,948 usable ABO assets produced by the three reviewed historical tool commits while leaving every pack, raw archive, manifest, checksum, and provenance field unchanged.
 
 **Architecture:** Add a small fail-closed compatibility-attestation reader that validates one immutable control-plane JSON file and answers whether a manifest producer commit may be treated as output-compatible. Wire that predicate into the existing pack and raw-archive verifiers only for production; all existing identity, membership, hash, quality, path, and schema checks remain unchanged, and smoke/pilot retain exact current-commit matching. Publish the reviewed artifact, reconcile the six legacy batches, deploy the same code and artifact to both nodes, and resume the shared queue.
 
@@ -21,7 +21,7 @@
 Cover:
 
 - missing evidence returns no approved historical commits;
-- a valid, exact artifact approves both reviewed commits and the exact review
+- a valid, exact artifact approves all reviewed commits and the exact review
   baseline as their trust anchor;
 - unknown keys, duplicate commits, malformed/full-length commit hashes, an incorrect config hash, an incorrect pipeline version, a different review baseline, a changed-path digest mismatch, a non-empty output-affecting path list, a naive timestamp, and a symlinked artifact fail closed;
 - changed-path evidence is sorted and its digest is recomputed from newline-delimited paths;
@@ -44,7 +44,7 @@ Expected: FAIL because `data_toolkit.pipeline.output_compatibility` does not exi
 Implement:
 
 - immutable schema constants for `pixal3d-mv-v2` and review baseline `1d36d55d7a15e32d85ce892a7a2b91f9809d149a`;
-- strict exact-key validation with two exact reviewed historical commits;
+- strict exact-key validation with three exact reviewed historical commits;
 - no-follow, regular-file-only JSON reading rooted at `config.paths.data2_root / "control"`;
 - timezone-aware RFC 3339 timestamp validation;
 - sorted changed-path validation and SHA-256 recomputation;
@@ -154,6 +154,7 @@ For each historical commit, compute the sorted changed paths against baseline:
 
 ```bash
 git diff --name-only 0f4b290f3d23419f9389e669734cb7b8a50ec817 1d36d55d7a15e32d85ce892a7a2b91f9809d149a | LC_ALL=C sort -u
+git diff --name-only af6cd5705354e7833164034460e5261baadab3f2 1d36d55d7a15e32d85ce892a7a2b91f9809d149a | LC_ALL=C sort -u
 git diff --name-only fc26830338348e17929d7a734a4015ed4dca7bdd 1d36d55d7a15e32d85ce892a7a2b91f9809d149a | LC_ALL=C sort -u
 ```
 
@@ -168,7 +169,7 @@ Use an adjacent temporary regular file, `fsync`, and `os.replace`. Include:
 - `pixal3d-mv-v2`;
 - timezone-aware approval time;
 - exact review baseline;
-- both reviewed commits;
+- all three reviewed commits;
 - complete sorted changed-path lists and their newline-delimited SHA-256 values;
 - empty `output_affecting_changed_paths`.
 
@@ -176,7 +177,7 @@ Mode must be non-executable and the target must not be a symlink.
 
 **Step 3: Validate with production code**
 
-Run a short `pixal3d` environment check that loads the artifact and prints the two exact approved commits. Record the artifact SHA-256 and preserve its bytes through later reconciliation.
+Run a short `pixal3d` environment check that loads the artifact and prints the three exact approved commits plus the review baseline. Record the artifact SHA-256 and preserve its bytes through later reconciliation.
 
 ### Task 4: Reconcile legacy batches without modifying publications
 
@@ -201,7 +202,7 @@ Confirm:
 - missing/unpublished batches remain pending/failed according to queue policy;
 - all pre-recorded publication manifest SHA-256 values are unchanged;
 - the compatibility artifact SHA-256 is unchanged;
-- official completed usable ABO assets total 1,948, comprising 1,489 compatible legacy plus 459 current-commit assets.
+- official completed usable ABO assets total 1,948, comprising 1,489 early compatible assets plus 459 assets from the reviewed freeze-lock control commit.
 
 If any non-commit validation fails, leave that batch unadopted and report the exact predicate; do not edit or regenerate its publication.
 

@@ -42,6 +42,11 @@ def _valid_payload(config):
             "data_toolkit/pipeline/evidence.py",
             "data_toolkit/pipeline/work_queue.py",
         ),
+        (
+            "data_toolkit/pipeline/cli.py",
+            "data_toolkit/pipeline/runtime.py",
+            "data_toolkit/pipeline/work_queue.py",
+        ),
     )
     return {
         "schema_version": 1,
@@ -98,6 +103,21 @@ def test_exact_output_compatibility_attestation_is_accepted_without_mutation(
     )
     assert result.evidence_sha256 == sha256(before).hexdigest()
     assert path.read_bytes() == before
+
+
+def test_reviewed_freeze_lock_producer_commit_is_explicitly_approved(
+    compatibility_config,
+):
+    _write_payload(
+        compatibility_config, _valid_payload(compatibility_config)
+    )
+
+    result = load_output_compatibility(compatibility_config)
+
+    assert (
+        "af6cd5705354e7833164034460e5261baadab3f2"
+        in result.compatible_tool_commits
+    )
 
 
 @pytest.mark.parametrize(

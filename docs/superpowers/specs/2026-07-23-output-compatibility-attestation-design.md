@@ -2,9 +2,10 @@
 
 ## Goal
 
-Adopt the 1,489 usable ABO assets produced by tool commits
+Adopt or preserve the 1,948 usable ABO assets produced by tool commits
 `0f4b290f3d23419f9389e669734cb7b8a50ec817` and
-`fc26830338348e17929d7a734a4015ed4dca7bdd` without changing their packs,
+`fc26830338348e17929d7a734a4015ed4dca7bdd`, plus the later control-only
+commit `af6cd5705354e7833164034460e5261baadab3f2`, without changing their packs,
 manifests, member
 checksums, or original `tool_commit` provenance. Continue to require strict
 current-commit identity for every other historical commit.
@@ -36,6 +37,9 @@ The approved historical commits are:
   supervision;
 - `fc26830338348e17929d7a734a4015ed4dca7bdd`, which applied shared GPU
   policy.
+- `af6cd5705354e7833164034460e5261baadab3f2`, which tolerated active shard
+  freeze locks. Its batch009 and batch010 provenance was discovered from the
+  immutable manifests during the pre-reconciliation checksum capture.
 
 The review baseline is `1d36d55d7a15e32d85ce892a7a2b91f9809d149a`.
 Repository comparison confirmed that the intervening changes affect
@@ -84,15 +88,15 @@ After both drained legacy validation attempts release their leases:
 2. run targeted reconciliation for production batches with existing packs;
 3. adopt batch002 and batch004 through batch008 after complete pack/archive
    verification;
-4. preserve batch009 and batch010 as current-commit completions;
+4. preserve batch009 and batch010 as attested control-only completions;
 5. keep batches with no valid publication pending or terminal according to
    their existing queue record;
 6. reactivate node16 and node17.
 
 The expected adopted usable ABO count is 1,948 assets:
 
-- legacy-compatible: 1,489;
-- current-commit: 459.
+- early compatible commits: 1,489;
+- freeze-lock control commit: 459.
 
 ## Failure handling
 
