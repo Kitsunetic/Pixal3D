@@ -28,6 +28,7 @@ from .orchestrator import (
     IntegrationProviderRequired,
     PipelineStopped,
 )
+from .operator_handoff import preserve_operator_handoff_attempts
 from .preflight import PreflightStatus, run_preflight
 from .reporting import ReportValidationError
 from .resources import ResourceAccountingError, ResourceLimitExceeded
@@ -117,11 +118,12 @@ class PipelineArgumentParser(argparse.ArgumentParser):
                 args.node_id,
                 args.lease_token,
                 args.reason,
+                args.worker_registry,
             )
             if args.action == "handoff" and not all(handoff_arguments):
                 self.error(
                     "queue handoff requires unit, node, lease token, "
-                    "and reason"
+                    "reason, and worker registry"
                 )
             if args.action != "handoff" and any(handoff_arguments):
                 self.error(
@@ -238,6 +240,7 @@ def parser() -> argparse.ArgumentParser:
     queue.add_argument("--node-id")
     queue.add_argument("--lease-token")
     queue.add_argument("--reason")
+    queue.add_argument("--worker-registry", type=Path)
     for name in ("worker", "supervisor"):
         child = children.choices[name]
         child.add_argument("--node-id", required=True)
@@ -444,12 +447,50 @@ def _dispatch(args, config) -> int:
                 node_id=args.node_id,
                 token=args.lease_token,
             )
+            registry = WorkerRegistry(args.worker_registry.resolve())
+            try:
+                status = registry.read()[args.node_id]
+            except KeyError as error:
+                raise ArtifactValidationError(
+                    f"production worker is not registered: {args.node_id}"
+                ) from error
+            if status.state != "draining":
+                raise ArtifactValidationError(
+                    "production worker must be draining before handoff: "
+                    f"{args.node_id}"
+                )
             current = datetime.now(timezone.utc)
-            queue.handoff(
-                lease,
-                reason=args.reason,
-                now=current,
+            registration = status.registration
+            batch_root = (
+                registration.local_root
+                / "preprocess/active"
+                / lease.unit.shard_id
+                / lease.unit.batch_id
             )
+            evidence_root = (
+                registration.local_root
+                / "control/remediations/operator-handoffs"
+                / lease.unit.unit_id
+                / lease.token
+            )
+            with worker_process_lock(
+                registration.local_root, args.node_id
+            ):
+                queue.assert_owned(lease)
+                preserve_operator_handoff_attempts(
+                    batch_root,
+                    evidence_root=evidence_root,
+                    unit_id=lease.unit.unit_id,
+                    node_id=args.node_id,
+                    lease_token=lease.token,
+                    reason=args.reason,
+                    now=current,
+                )
+                queue.handoff(
+                    lease,
+                    reason=args.reason,
+                    now=current,
+                )
             print(
                 json.dumps(
                     queue.snapshot(now=current),

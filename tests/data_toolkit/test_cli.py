@@ -1263,8 +1263,29 @@ def test_queue_cli_handoff_preserves_attempt_without_building_runtime(
         ProductionWorkQueue,
         WorkUnit,
     )
+    from data_toolkit.pipeline.worker_registry import (
+        WorkerRegistration,
+        WorkerRegistry,
+    )
 
     config = load_config(tmp_config)
+    registry_path = (
+        config.paths.data2_root / "control/runtime/workers.json"
+    )
+    registry = WorkerRegistry(registry_path)
+    registry.register(
+        WorkerRegistration(
+            node_id="node16",
+            ssh_target="local",
+            cpu_limit=4,
+            gpu_indices=(0,),
+            data2_root=config.paths.data2_root,
+            data3_root=config.paths.data3_root,
+            local_root=config.paths.local_root,
+        ),
+        now=datetime.now(timezone.utc),
+    )
+    registry.drain("node16")
     queue = ProductionWorkQueue(
         config.paths.data2_root / "control/runtime/work_queue",
         lease_timeout=timedelta(minutes=5),
@@ -1279,6 +1300,28 @@ def test_queue_cli_handoff_preserves_attempt_without_building_runtime(
         now=datetime.now(timezone.utc),
         token="held-token",
     )
+    checkpoint = (
+        config.paths.local_root
+        / "preprocess/active/HSSD-00000/batch003"
+        / "chunk_checkpoints/chunk001/pipeline.json"
+    )
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text(json.dumps({
+        "schema_version": 3,
+        "shard_id": "HSSD-00000-chunk001",
+        "completed_commands": ["stage_raw", "dump_mesh"],
+        "attempts": {
+            "stage_raw": 1,
+            "dump_mesh": 1,
+            "dump_pbr": 2,
+        },
+        "active_attempt": {
+            "command": "dump_pbr",
+            "attempt": 2,
+        },
+        "quality_outcomes": {},
+        "gate": "production",
+    }))
     monkeypatch.setattr(
         "data_toolkit.pipeline.cli.build_mutating_services",
         lambda _config: pytest.fail("handoff built preprocessing runtime"),
@@ -1293,6 +1336,8 @@ def test_queue_cli_handoff_preserves_attempt_without_building_runtime(
         lease.unit.unit_id,
         "--node-id",
         lease.node_id,
+        "--worker-registry",
+        str(registry_path),
         "--reason",
         "operator concurrency reload",
     ]
@@ -1304,6 +1349,20 @@ def test_queue_cli_handoff_preserves_attempt_without_building_runtime(
     assert main([*arguments, "--lease-token", lease.token]) == 0
     snapshot = json.loads(capsys.readouterr().out)
     assert snapshot["counts"]["pending"] == 1
+    repaired = json.loads(checkpoint.read_text())
+    assert repaired["attempts"]["dump_pbr"] == 1
+    assert repaired["active_attempt"] is None
+    evidence = (
+        config.paths.local_root
+        / "control/remediations/operator-handoffs"
+        / lease.unit.unit_id / lease.token / "remediation.json"
+    )
+    assert json.loads(evidence.read_text())["refunded_attempts"] == [{
+        "attempts_after": 1,
+        "attempts_before": 2,
+        "chunk_id": "chunk001",
+        "command": "dump_pbr",
+    }]
     replacement = queue.claim(
         "node16",
         now=datetime.now(timezone.utc),
