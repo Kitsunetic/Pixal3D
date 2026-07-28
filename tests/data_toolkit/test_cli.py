@@ -1255,6 +1255,64 @@ def test_queue_cli_persists_and_reports_source_priority(tmp_config, capsys):
     assert status["source_priority"] == ["ABO", "HSSD"]
 
 
+def test_queue_cli_handoff_preserves_attempt_without_building_runtime(
+    tmp_config, monkeypatch, capsys
+):
+    from data_toolkit.pipeline.work_queue import (
+        LeaseLostError,
+        ProductionWorkQueue,
+        WorkUnit,
+    )
+
+    config = load_config(tmp_config)
+    queue = ProductionWorkQueue(
+        config.paths.data2_root / "control/runtime/work_queue",
+        lease_timeout=timedelta(minutes=5),
+    )
+    queue.initialize(
+        config.config_hash(),
+        (WorkUnit("HSSD", "HSSD-00000", "batch003", 256),),
+        now=datetime.now(timezone.utc),
+    )
+    lease = queue.claim(
+        "node16",
+        now=datetime.now(timezone.utc),
+        token="held-token",
+    )
+    monkeypatch.setattr(
+        "data_toolkit.pipeline.cli.build_mutating_services",
+        lambda _config: pytest.fail("handoff built preprocessing runtime"),
+    )
+    arguments = [
+        "queue",
+        "--config",
+        str(tmp_config),
+        "--action",
+        "handoff",
+        "--unit-id",
+        lease.unit.unit_id,
+        "--node-id",
+        lease.node_id,
+        "--reason",
+        "operator concurrency reload",
+    ]
+
+    with pytest.raises(LeaseLostError):
+        main([*arguments, "--lease-token", "wrong-token"])
+    assert queue.status(now=datetime.now(timezone.utc))["running"] == 1
+
+    assert main([*arguments, "--lease-token", lease.token]) == 0
+    snapshot = json.loads(capsys.readouterr().out)
+    assert snapshot["counts"]["pending"] == 1
+    replacement = queue.claim(
+        "node16",
+        now=datetime.now(timezone.utc),
+        token="replacement-token",
+    )
+    assert replacement is not None
+    assert replacement.attempt == lease.attempt
+
+
 @pytest.mark.parametrize(
     "argv",
     [

@@ -111,6 +111,21 @@ class PipelineArgumentParser(argparse.ArgumentParser):
                 self.error("queue prioritize requires --sources")
             if args.action != "prioritize" and args.sources is not None:
                 self.error("queue --sources requires --action prioritize")
+            handoff_arguments = (
+                args.unit_id,
+                args.node_id,
+                args.lease_token,
+                args.reason,
+            )
+            if args.action == "handoff" and not all(handoff_arguments):
+                self.error(
+                    "queue handoff requires unit, node, lease token, "
+                    "and reason"
+                )
+            if args.action != "handoff" and any(handoff_arguments):
+                self.error(
+                    "queue handoff arguments require --action handoff"
+                )
         if command == "workers":
             policy_arguments = (
                 args.gpu_target_percent is not None,
@@ -214,10 +229,14 @@ def parser() -> argparse.ArgumentParser:
     queue = children.choices["queue"]
     queue.add_argument(
         "--action",
-        choices=("init", "reconcile", "status", "prioritize"),
+        choices=("init", "reconcile", "status", "prioritize", "handoff"),
         required=True,
     )
     queue.add_argument("--sources", type=_source_priority)
+    queue.add_argument("--unit-id")
+    queue.add_argument("--node-id")
+    queue.add_argument("--lease-token")
+    queue.add_argument("--reason")
     for name in ("worker", "supervisor"):
         child = children.choices[name]
         child.add_argument("--node-id", required=True)
@@ -399,6 +418,26 @@ def _dispatch(args, config) -> int:
             print(
                 json.dumps(
                     queue.snapshot(now=datetime.now(timezone.utc)),
+                    sort_keys=True,
+                )
+            )
+            return SUCCESS
+        if args.action == "handoff":
+            _assert_queue_config(queue, config)
+            lease = queue.owned_lease(
+                args.unit_id,
+                node_id=args.node_id,
+                token=args.lease_token,
+            )
+            current = datetime.now(timezone.utc)
+            queue.handoff(
+                lease,
+                reason=args.reason,
+                now=current,
+            )
+            print(
+                json.dumps(
+                    queue.snapshot(now=current),
                     sort_keys=True,
                 )
             )
