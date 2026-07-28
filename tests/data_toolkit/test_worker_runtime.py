@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from data_toolkit.pipeline.config import load_config
 from data_toolkit.pipeline.gpu_policy import GpuRuntimePolicy
+from data_toolkit.pipeline.parallelism_policy import ParallelismRuntimePolicy
 from data_toolkit.pipeline.worker_registry import WorkerRegistration
 
 import pytest
@@ -70,6 +71,36 @@ def test_execution_config_applies_gpu_policy_without_changing_identity():
     assert canonical.parallelism.gpu_memory_hard_percent == 90
     assert configured.parallelism.gpu_memory_target_percent == 80
     assert configured.parallelism.gpu_memory_hard_percent == 100
+
+
+def test_execution_config_applies_node_parallelism_without_changing_gpu_count():
+    canonical = load_config(CONFIG)
+    registration = WorkerRegistration(
+        node_id="node17",
+        ssh_target="node17",
+        cpu_limit=44,
+        gpu_indices=(1, 2, 3, 4, 5, 6, 7),
+        data2_root=Path("/root/data2/pixal3d"),
+        data3_root=Path("/root/data3/pixal3d"),
+        local_root=Path("/root/node17/data/pixal3d"),
+    )
+
+    configured = execution_config(
+        canonical,
+        registration,
+        parallelism_policy=ParallelismRuntimePolicy(1, (1, 2, 3), 16),
+    )
+
+    assert configured.config_hash() == canonical.config_hash()
+    assert configured.parallelism.gpu_count == 7
+    assert configured.parallelism.max_chunks_in_flight == 1
+    assert configured.parallelism.render_workers_per_gpu_steps == (1, 2, 3)
+    assert configured.workers.dump_workers == 16
+    assert configured.worker_tuning.dump_steps == (16,)
+    assert configured.worker_tuning.voxel_profiles == ((8, 4), (10, 4), (11, 4))
+    assert configured.workers.render_workers == 7
+    assert configured.workers.encoder_ranks == 7
+    assert canonical.parallelism.max_chunks_in_flight == 3
 
 
 def test_worker_process_lock_rejects_duplicate_for_same_node(tmp_path):

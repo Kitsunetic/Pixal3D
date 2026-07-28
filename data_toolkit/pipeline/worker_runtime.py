@@ -13,6 +13,7 @@ from typing import Callable, Iterator
 
 from .config import PipelineConfig
 from .gpu_policy import GpuRuntimePolicy
+from .parallelism_policy import ParallelismRuntimePolicy
 from .worker_registry import WorkerRegistration
 
 
@@ -157,12 +158,18 @@ class WorkerExecutionConfig:
         canonical: PipelineConfig,
         registration: WorkerRegistration,
         gpu_policy: GpuRuntimePolicy | None = None,
+        parallelism_policy: ParallelismRuntimePolicy | None = None,
     ) -> None:
         gpu_count = len(registration.gpu_indices)
         cpu_limit = registration.cpu_limit
         effective_gpu_policy = gpu_policy or GpuRuntimePolicy(
             canonical.parallelism.gpu_memory_target_percent,
             canonical.parallelism.gpu_memory_hard_percent,
+        )
+        effective_parallelism = parallelism_policy or ParallelismRuntimePolicy(
+            canonical.parallelism.max_chunks_in_flight,
+            canonical.parallelism.render_workers_per_gpu_steps,
+            max(canonical.worker_tuning.dump_steps),
         )
         if (
             effective_gpu_policy.target_percent
@@ -176,11 +183,15 @@ class WorkerExecutionConfig:
                 "GPU runtime policy must preserve the canonical target and "
                 "satisfy 0 < target < hard <= 100"
             )
+        dump_workers_limit = min(
+            cpu_limit,
+            effective_parallelism.dump_workers_max,
+        )
         dump_steps = tuple(
             value
             for value in canonical.worker_tuning.dump_steps
-            if value <= cpu_limit
-        ) or (cpu_limit,)
+            if value <= dump_workers_limit
+        ) or (dump_workers_limit,)
         voxel_profiles = tuple(
             profile
             for profile in canonical.worker_tuning.voxel_profiles
@@ -204,11 +215,18 @@ class WorkerExecutionConfig:
             cpu_physical_cores=cpu_limit,
             gpu_memory_target_percent=effective_gpu_policy.target_percent,
             gpu_memory_hard_percent=effective_gpu_policy.hard_percent,
+            max_chunks_in_flight=effective_parallelism.max_chunks_in_flight,
+            render_workers_per_gpu_steps=(
+                effective_parallelism.render_workers_per_gpu_steps
+            ),
         )
         self.workers = replace(
             canonical.workers,
             cpu_threads=cpu_limit,
-            dump_workers=min(canonical.workers.dump_workers, cpu_limit),
+            dump_workers=min(
+                canonical.workers.dump_workers,
+                dump_workers_limit,
+            ),
             voxel_workers=configured_voxel_workers,
             voxel_threads_per_worker=configured_voxel_threads,
             render_workers=gpu_count,
@@ -233,5 +251,11 @@ def execution_config(
     canonical: PipelineConfig,
     registration: WorkerRegistration,
     gpu_policy: GpuRuntimePolicy | None = None,
+    parallelism_policy: ParallelismRuntimePolicy | None = None,
 ) -> WorkerExecutionConfig:
-    return WorkerExecutionConfig(canonical, registration, gpu_policy)
+    return WorkerExecutionConfig(
+        canonical,
+        registration,
+        gpu_policy,
+        parallelism_policy,
+    )

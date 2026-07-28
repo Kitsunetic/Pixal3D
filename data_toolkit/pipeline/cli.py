@@ -18,6 +18,7 @@ from .gpu_policy import (
     read_gpu_runtime_policy,
     write_gpu_runtime_policy,
 )
+from .parallelism_policy import read_parallelism_runtime_policy
 from .commands import ShardContext
 from .hardware import HardwarePreflightError, collect_hardware_preflight
 from .orchestrator import (
@@ -283,10 +284,24 @@ def _effective_gpu_policy(config, data2_root: Path) -> GpuRuntimePolicy:
 
 
 def _registered_execution_config(config, registration):
+    parallelism = read_parallelism_runtime_policy(
+        (
+            registration.local_root
+            / "control/runtime/parallelism_policy.json"
+        ),
+        canonical_max_chunks_in_flight=(
+            config.parallelism.max_chunks_in_flight
+        ),
+        canonical_render_workers_per_gpu_steps=(
+            config.parallelism.render_workers_per_gpu_steps
+        ),
+        canonical_dump_workers_max=max(config.worker_tuning.dump_steps),
+    )
     return execution_config(
         config,
         registration,
         _effective_gpu_policy(config, registration.data2_root),
+        parallelism,
     )
 
 
