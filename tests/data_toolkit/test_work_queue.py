@@ -187,6 +187,58 @@ def test_stale_lease_is_reclaimed_and_fenced(tmp_path):
         queue.complete(stale, now=NOW + timedelta(minutes=6))
 
 
+def test_operator_handoff_preserves_attempt_and_token_fences(tmp_path):
+    queue = ProductionWorkQueue(
+        tmp_path, lease_timeout=timedelta(minutes=5)
+    )
+    queue.initialize("a" * 64, units()[:1], now=NOW)
+    lease = queue.claim("node16", now=NOW, token="held-token")
+
+    assert (
+        queue.owned_lease(
+            lease.unit.unit_id,
+            node_id="node16",
+            token="held-token",
+        )
+        == lease
+    )
+    with pytest.raises(LeaseLostError):
+        queue.owned_lease(
+            lease.unit.unit_id,
+            node_id="node16",
+            token="wrong-token",
+        )
+
+    queue.handoff(
+        lease,
+        reason="operator concurrency reload",
+        now=NOW + timedelta(seconds=1),
+    )
+
+    replacement = queue.claim(
+        "node16",
+        now=NOW + timedelta(seconds=2),
+        token="replacement-token",
+    )
+    assert replacement is not None
+    assert replacement.unit == lease.unit
+    assert replacement.attempt == lease.attempt
+    handoff = (
+        tmp_path
+        / "history"
+        / f"{lease.unit.unit_id}.{lease.token}.handoff"
+        / "handoff.json"
+    )
+    assert handoff.is_file()
+    assert "operator concurrency reload" in handoff.read_text()
+    with pytest.raises(LeaseLostError):
+        queue.handoff(
+            lease,
+            reason="stale operator",
+            now=NOW + timedelta(seconds=3),
+        )
+
+
 def test_heartbeat_extends_lease_and_tracks_stage(tmp_path):
     queue = ProductionWorkQueue(tmp_path, lease_timeout=timedelta(minutes=5))
     queue.initialize("a" * 64, units()[:1], now=NOW)

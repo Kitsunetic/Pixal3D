@@ -330,6 +330,35 @@ class ProductionWorkQueue:
         ):
             raise LeaseLostError(f"work lease was lost: {lease.unit.unit_id}")
 
+    def owned_lease(
+        self,
+        unit_id: str,
+        *,
+        node_id: str,
+        token: str,
+    ) -> WorkLease:
+        _identifier(unit_id, "work unit id")
+        _identifier(node_id, "node id")
+        _identifier(token, "lease token")
+        unit = next(
+            (
+                candidate
+                for candidate in self.units()
+                if candidate.unit_id == unit_id
+            ),
+            None,
+        )
+        if unit is None:
+            raise ValueError(f"unknown production work unit: {unit_id}")
+        lease = self._read_lease(unit)
+        if (
+            lease is None
+            or lease.node_id != node_id
+            or lease.token != token
+        ):
+            raise LeaseLostError(f"work lease was lost: {unit_id}")
+        return lease
+
     def complete(self, lease: WorkLease, *, now: datetime) -> None:
         _aware(now)
         self.assert_owned(lease)
@@ -349,6 +378,40 @@ class ProductionWorkQueue:
             self._lease_dir(lease.unit).rename(
                 self.history_root
                 / f"{lease.unit.unit_id}.{lease.token}.completed"
+            )
+        except FileNotFoundError as error:
+            raise LeaseLostError(
+                f"work lease was lost: {lease.unit.unit_id}"
+            ) from error
+
+    def handoff(
+        self,
+        lease: WorkLease,
+        *,
+        reason: str,
+        now: datetime,
+    ) -> None:
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("handoff reason must be non-empty")
+        _aware(now)
+        self.assert_owned(lease)
+        _write_json(
+            self._lease_dir(lease.unit) / "handoff.json",
+            {
+                "schema_version": QUEUE_SCHEMA_VERSION,
+                "unit_id": lease.unit.unit_id,
+                "node_id": lease.node_id,
+                "token": lease.token,
+                "attempt": lease.attempt,
+                "reason": reason,
+                "handed_off_at": _timestamp(now),
+            },
+        )
+        self.assert_owned(lease)
+        try:
+            self._lease_dir(lease.unit).rename(
+                self.history_root
+                / f"{lease.unit.unit_id}.{lease.token}.handoff"
             )
         except FileNotFoundError as error:
             raise LeaseLostError(
@@ -532,6 +595,40 @@ class ProductionWorkQueue:
         if self.history_root.is_dir():
             for path in self.history_root.iterdir():
                 if not path.name.startswith(prefix) or not path.is_dir():
+                    continue
+                if path.name.endswith(".handoff"):
+                    handoff = _read_json(
+                        path / "handoff.json", missing_ok=True
+                    )
+                    owner = _read_json(
+                        path / "owner.json", missing_ok=True
+                    )
+                    if (
+                        not isinstance(handoff, dict)
+                        or not isinstance(owner, dict)
+                        or set(handoff)
+                        != {
+                            "schema_version",
+                            "unit_id",
+                            "node_id",
+                            "token",
+                            "attempt",
+                            "reason",
+                            "handed_off_at",
+                        }
+                        or handoff["schema_version"]
+                        != QUEUE_SCHEMA_VERSION
+                        or handoff["unit_id"] != unit.unit_id
+                        or handoff["node_id"] != owner.get("node_id")
+                        or handoff["token"] != owner.get("token")
+                        or handoff["attempt"] != owner.get("attempt")
+                        or not isinstance(handoff["reason"], str)
+                        or not handoff["reason"].strip()
+                    ):
+                        raise ValueError(
+                            "invalid production work handoff history"
+                        )
+                    datetime.fromisoformat(handoff["handed_off_at"])
                     continue
                 value = _read_json(path / "owner.json", missing_ok=True)
                 if isinstance(value, dict):
