@@ -124,11 +124,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         workers_per_job = max(
             1, arguments.max_workers // len(scheduled)
         )
-        active_workers = sum(
-            min(workers_per_job, len(read_asset_ids(instances)))
-            for _view, _script, _input, _output, instances in scheduled
-        )
-        native_threads = min(4, 44 // active_workers)
         for (view, script, input_flag, output_flag, instances), resolutions in scheduled.items():
             input_root = (
                 arguments.mesh_dump_root
@@ -157,7 +152,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "--max_workers",
                         str(workers_per_job),
                         "--native_threads",
-                        str(native_threads),
+                        str(arguments.native_threads),
                         "--record_prefix",
                         f"{arguments.record_prefix}view{view:02d}_",
                     ],
