@@ -464,14 +464,14 @@ def main(arg):
     for i, view in enumerate(views):
         current_radius = view['radius']
         retry_count = 0
+        cam_dir = np.array([
+            np.cos(view['yaw']) * np.cos(view['pitch']),
+            np.sin(view['yaw']) * np.cos(view['pitch']),
+            np.sin(view['pitch'])
+        ])
+        init_random_lighting(cam_dir)
         
         while retry_count < max_retry:
-            cam_dir = np.array([
-                np.cos(view['yaw']) * np.cos(view['pitch']),
-                np.sin(view['yaw']) * np.cos(view['pitch']),
-                np.sin(view['pitch'])
-            ])
-            init_random_lighting(cam_dir)
             cam.location = (
                 current_radius * cam_dir[0],
                 current_radius * cam_dir[1],
