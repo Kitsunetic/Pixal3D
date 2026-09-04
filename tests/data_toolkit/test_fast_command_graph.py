@@ -99,13 +99,9 @@ def test_geometry_bundle_skips_excluded_pbr_families(tmp_path, monkeypatch):
         "--family_instances_file", str(family_manifest),
     ]) == 0
 
-    assert len(launched) == 2
+    assert len(launched) == 6
     assert all("dual_grid_view.py" in command[1] for command in launched)
-    assert all(
-        command[command.index("--resolution") + 1] == "256,512,1024"
-        for command in launched
-    )
-    assert all(command[command.index("--max_workers") + 1] == "5" for command in launched)
+    assert all(command[command.index("--max_workers") + 1] == "1" for command in launched)
 
 
 def test_encoder_bundle_skips_excluded_pbr_families(tmp_path, monkeypatch):

@@ -104,9 +104,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     def commands() -> tuple[list[str], ...]:
         result: list[list[str]] = []
-        scheduled: dict[
-            tuple[int, str, str, str, Path], list[int]
-        ] = {}
+        scheduled: list[tuple[int, int, str, str, str]] = []
         for resolution in arguments.resolutions:
             for view in views:
                 for script, input_flag, output_flag in GEOMETRY_SCRIPTS:
@@ -118,16 +116,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                     instances = family_instances.get(family, default_instances)
                     if not read_asset_ids(instances):
                         continue
-                    key = (view, script, input_flag, output_flag, instances)
-                    scheduled.setdefault(key, []).append(resolution)
+                    scheduled.append(
+                        (resolution, view, script, input_flag, output_flag)
+                    )
         if not scheduled:
             return ()
         workers_per_job = max(
             1, arguments.max_workers // len(scheduled)
         )
-        for (view, script, input_flag, output_flag, instances), resolutions in (
-            scheduled.items()
-        ):
+        for resolution, view, script, input_flag, output_flag in scheduled:
+            family = (
+                f"shape-{resolution}"
+                if script == "dual_grid_view.py"
+                else f"PBR-{resolution}"
+            )
+            instances = family_instances.get(family, default_instances)
             input_root = (
                 arguments.mesh_dump_root
                 if input_flag == "--mesh_dump_root"
@@ -149,7 +152,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         output_flag,
                         arguments.voxel_root,
                         "--resolution",
-                        ",".join(str(resolution) for resolution in resolutions),
+                        str(resolution),
                         "--view_indices",
                         str(view),
                         "--max_workers",
