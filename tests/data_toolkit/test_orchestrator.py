@@ -346,28 +346,28 @@ def test_work_batches_respect_explicit_gate_cap():
 
 def test_resume_skips_only_valid_outputs(isolated_config, shard_context):
     fake_runner = RecordingRunner(isolated_config)
-    fake_runner.checkpoint.complete("dump_mesh")
-    fake_runner.validators["dump_mesh"] = lambda: True
+    fake_runner.checkpoint.complete("prepare_bundle")
+    fake_runner.validators["prepare_bundle"] = lambda: True
     fake_runner.run_shard(shard_context)
-    assert "dump_mesh" not in fake_runner.executed
-    assert "dump_pbr" in fake_runner.executed
+    assert "prepare_bundle" not in fake_runner.executed
+    assert "geometry_encode_bundle" in fake_runner.executed
 
 
 def test_corrupt_complete_output_is_regenerated(isolated_config, shard_context):
     fake_runner = RecordingRunner(isolated_config)
-    fake_runner.checkpoint.complete("render_cond")
-    fake_runner.validators["render_cond"] = lambda: False
+    fake_runner.checkpoint.complete("prepare_bundle")
+    fake_runner.validators["prepare_bundle"] = lambda: False
     fake_runner.run_shard(shard_context)
-    assert "render_cond" in fake_runner.executed
+    assert "prepare_bundle" in fake_runner.executed
 
 
 def test_completed_output_revalidation_preserves_pipeline_stop(
     isolated_config, shard_context
 ):
     runner = RecordingRunner(isolated_config)
-    runner.checkpoint.complete("dump_mesh")
+    runner.checkpoint.complete("prepare_bundle")
     stopped = PipelineStopped(SimpleNamespace(reason="quality stop"), 4)
-    runner.validators["dump_mesh"] = lambda: (_ for _ in ()).throw(stopped)
+    runner.validators["prepare_bundle"] = lambda: (_ for _ in ()).throw(stopped)
 
     with pytest.raises(PipelineStopped) as caught:
         runner.run_shard(shard_context)
@@ -503,6 +503,30 @@ def test_failed_render_retry_steps_down_workers_at_retry_boundary(
     runner.run_shard(shard_context)
 
     assert launched_workers == [4, 3]
+
+
+def test_failed_prepare_bundle_retry_steps_down_embedded_render_workers(
+    isolated_config, shard_context
+):
+    command = CommandSpec(
+        "prepare_bundle",
+        ("worker", "--render_workers_per_gpu", "4"),
+    )
+    runner = RecordingRunner(isolated_config, (command,))
+    launched_workers = []
+
+    def execute(candidate, shard_id):
+        option = candidate.argv.index("--render_workers_per_gpu")
+        launched_workers.append(candidate.argv[option + 1])
+        if len(launched_workers) == 1:
+            raise subprocess.CalledProcessError(1, candidate.argv)
+        runner.validators[candidate.name] = lambda: True
+
+    runner.execute = execute
+
+    runner.run_shard(shard_context)
+
+    assert launched_workers == ["4", "3"]
 
 
 def test_resume_does_not_reset_failed_attempt_budget(
@@ -1802,6 +1826,37 @@ def test_pbr_exclusion_keeps_geometry_command_instances(
     assert services._candidate_assets(context, "SS-64") == assets
 
 
+def test_bundle_receives_family_specific_instance_lists(
+    isolated_config, tmp_path
+):
+    _services, context, runner, assets = _family_services(
+        isolated_config, tmp_path
+    )
+    full_pbr, geometry_only = assets
+    runner.record_family_exclusion(
+        geometry_only,
+        ("PBR-256", "PBR-512", "PBR-1024"),
+        category="unsupported_shader",
+        stage="dump_pbr",
+        reason="Material is not supported",
+        attempts=1,
+    )
+    command = CommandSpec(
+        "geometry_encode_bundle",
+        ("python", "worker.py", "--instances", str(context.instances)),
+    )
+
+    launch = runner._command_for_eligible_assets(
+        command, context, runner.active_checkpoint
+    )
+
+    option = launch.argv.index("--family_instances_file")
+    family_paths = json.loads(Path(launch.argv[option + 1]).read_text())
+    assert Path(family_paths["PBR-256"]).read_text().splitlines() == [full_pbr]
+    assert Path(family_paths["shape-256"]).read_text().splitlines() == list(assets)
+    assert Path(family_paths["SS-64"]).read_text().splitlines() == list(assets)
+
+
 def test_shape_resolution_exclusion_cascades_only_to_dependents(
     isolated_config, tmp_path
 ):
@@ -1895,12 +1950,43 @@ def test_dump_pbr_validator_retries_transient_failure_before_exclusion(
     assert asset not in runner.active_checkpoint.quality_outcomes
 
 
+def test_fused_prepare_uses_its_retry_count_for_pbr_exclusion(
+    isolated_config, tmp_path
+):
+    services, context, runner, assets = _family_services(
+        isolated_config, tmp_path
+    )
+    asset = assets[0]
+    _write_pbr_stage_records(
+        context,
+        ({
+            "sha256": asset,
+            "pbr_dumped": False,
+            "error_category": "timeout",
+            "error_reason": "PBR dump timed out after 17 seconds",
+        },),
+    )
+    runner.active_checkpoint.attempts["prepare_bundle"] = 3
+
+    services._validate_pbr_dump_stage(
+        context, attempt_key="prepare_bundle"
+    )
+
+    exclusions = runner.family_exclusions(asset)
+    assert set(exclusions) == {"PBR-256", "PBR-512", "PBR-1024"}
+    assert {record["attempts"] for record in exclusions.values()} == {3}
+
+
 @pytest.mark.parametrize(
     ("command_name", "expected_exclusions"),
     (
-        ("dual_grid_256", {"shape-256", "PBR-256"}),
-        ("voxelize_pbr_256", {"PBR-256"}),
-        ("encode_ss_64", {"SS-64"}),
+        (
+            "geometry_encode_bundle",
+            {
+                "shape-256", "PBR-256", "shape-512", "PBR-512",
+                "shape-1024", "PBR-1024", "SS-64",
+            },
+        ),
     ),
 )
 def test_family_stage_validator_does_not_globally_quarantine_missing_output(
@@ -2883,7 +2969,7 @@ def test_local_cleanup_requires_pack_and_archive_audits(
     assert not context.output_root.exists()
 
 
-def test_production_dag_shape_validation_precedes_pbr_and_cleanup_requires_both(
+def test_shape_validation_precedes_pbr_and_cleanup_requires_both(
     isolated_config, tmp_path, monkeypatch
 ):
     context = ShardContext.for_test(
@@ -2920,7 +3006,9 @@ def test_production_dag_shape_validation_precedes_pbr_and_cleanup_requires_both(
             output.write_bytes(b"latent")
             output.with_name(f"view{view:02d}_scale.json").write_text("{}")
 
-    assert services.validators["encode_shape_256"]() is True
+    services._validate_resolution_asset(
+        context, 256, services._shape_directory(256), asset_sha
+    )
     assert validated
     assert all("shape_latents" in path.parts for path in validated)
 
@@ -3273,7 +3361,10 @@ def test_dump_stats_and_voxel_validators_reject_structurally_corrupt_outputs(
         voxel.with_name(f"view{view:02d}_scale.json").write_text(
             '{"scale": 1.0}'
         )
-    assert services.validators["dual_grid_256"]() is False
+    with pytest.raises(ValidationError):
+        services._validate_voxel_output(
+            context, "dual_grid_view_256", asset_sha, 0
+        )
 
 
 def test_completed_validator_io_failure_is_immediate_infrastructure_stop(
@@ -4658,6 +4749,52 @@ def test_supervisor_program_uses_ready_handshake_and_kernel_group_control():
     assert program.index("os.read(release_fd") < program.index(
         "worker = subprocess.Popen"
     )
+
+
+def test_supervisor_reaps_worker_descendant_after_worker_failure(tmp_path):
+    child_pid_path = tmp_path / "child.pid"
+    child_program = "import time; time.sleep(60)"
+    worker_program = (
+        "import pathlib, subprocess, sys; "
+        "child=subprocess.Popen([sys.executable, '-c', sys.argv[2]]); "
+        "pathlib.Path(sys.argv[1]).write_text(str(child.pid)); "
+        "raise SystemExit(7)"
+    )
+    ready_read, ready_write = os.pipe()
+    release_read, release_write = os.pipe()
+    environment = dict(os.environ)
+    environment["PIXAL3D_SUPERVISOR_READY_FD"] = str(ready_write)
+    environment["PIXAL3D_SUPERVISOR_RELEASE_FD"] = str(release_read)
+    supervisor = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            orchestrator_module._SUPERVISOR_PROGRAM,
+            sys.executable,
+            "-c",
+            worker_program,
+            str(child_pid_path),
+            child_program,
+        ],
+        env=environment,
+        pass_fds=(ready_write, release_read),
+        start_new_session=True,
+    )
+    os.close(ready_write)
+    os.close(release_read)
+    try:
+        assert os.read(ready_read, 1) == b"1"
+        os.write(release_write, b"1")
+        assert supervisor.wait(timeout=10) == 7
+        child_pid = int(child_pid_path.read_text())
+        with pytest.raises(ProcessLookupError):
+            os.kill(child_pid, 0)
+    finally:
+        os.close(ready_read)
+        os.close(release_write)
+        if supervisor.poll() is None:
+            os.killpg(supervisor.pid, signal.SIGKILL)
+            supervisor.wait(timeout=5)
 
 
 def test_supervisor_resume_handler_ignores_self_delivery_while_resuming_group():

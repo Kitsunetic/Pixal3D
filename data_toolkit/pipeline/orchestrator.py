@@ -104,6 +104,19 @@ def family_dependencies(
 def command_families(
     config: PipelineConfig, command_name: str
 ) -> tuple[str, ...]:
+    if command_name in {
+        "geometry_bundle",
+        "encode_latent_bundle",
+        "geometry_encode_bundle",
+    }:
+        return (
+            *(
+                family
+                for resolution in config.targets.resolutions
+                for family in (f"shape-{resolution}", f"PBR-{resolution}")
+            ),
+            f"SS-{config.targets.ss_resolution}",
+        )
     if command_name == "dump_pbr":
         return tuple(
             f"PBR-{resolution}"
@@ -138,6 +151,8 @@ if libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
 leader = os.getpid()
 worker_status = None
 terminating = False
+failure_cleanup = False
+cleanup_deadline = None
 
 def pause_group(*_):
     os.killpg(leader, signal.SIGSTOP)
@@ -191,6 +206,19 @@ while True:
         if pid == worker.pid:
             worker_status = os.waitstatus_to_exitcode(status)
 
+    if not terminating and worker_status not in (None, 0):
+        failure_cleanup = True
+        terminating = True
+        cleanup_deadline = time.monotonic() + 5.0
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        os.killpg(leader, signal.SIGTERM)
+
+    if failure_cleanup and cleanup_deadline is not None:
+        if time.monotonic() >= cleanup_deadline:
+            os.killpg(leader, signal.SIGKILL)
+
+    if failure_cleanup and worker_status is not None and no_children:
+        raise SystemExit(worker_status)
     if not terminating and worker_status is not None and no_children:
         raise SystemExit(worker_status)
     time.sleep(0.05)
@@ -1459,9 +1487,15 @@ class PipelineRunner:
                                 if persistence_error is not None
                                 else (),
                             )
-                        if command.name == "render_cond":
+                        if command.name in {"render_cond", "prepare_bundle"}:
+                            current_workers = command.workers_per_gpu
+                            if command.name == "prepare_bundle":
+                                option = command.argv.index(
+                                    "--render_workers_per_gpu"
+                                )
+                                current_workers = int(command.argv[option + 1])
                             stepped_workers = select_render_workers(
-                                current=command.workers_per_gpu,
+                                current=current_workers,
                                 peak_percent=0.0,
                                 temperature_celsius=0.0,
                                 failed=True,
@@ -1470,10 +1504,15 @@ class PipelineRunner:
                                     .render_workers_per_gpu_steps
                                 ),
                             )
-                            command = replace(
-                                command,
-                                workers_per_gpu=stepped_workers,
-                            )
+                            if command.name == "prepare_bundle":
+                                argv = list(command.argv)
+                                argv[option + 1] = str(stepped_workers)
+                                command = replace(command, argv=tuple(argv))
+                            else:
+                                command = replace(
+                                    command,
+                                    workers_per_gpu=stepped_workers,
+                                )
                             if self.worker_profile is not None:
                                 self.worker_profile = replace(
                                     self.worker_profile,
@@ -1784,8 +1823,44 @@ class PipelineRunner:
             eligible_path,
             "".join(f"{asset}\n" for asset in eligible).encode("ascii"),
         )
+        family_manifest_path: Path | None = None
+        if len(families) > 1:
+            family_paths: dict[str, str] = {}
+            for family in families:
+                family_path = (
+                    context.work_root
+                    / "control/eligible"
+                    / f"{_safe_component(command.name, 'command name')}."
+                    f"{_safe_component(family, 'family')}.txt"
+                )
+                family_assets = tuple(
+                    asset
+                    for asset in assets
+                    if asset not in checkpoint.quality_outcomes
+                    and self.family_is_eligible(asset, family)
+                )
+                _atomic_write_bytes_nofollow(
+                    family_path,
+                    "".join(
+                        f"{asset}\n" for asset in family_assets
+                    ).encode("ascii"),
+                )
+                family_paths[family] = str(family_path)
+            family_manifest_path = (
+                context.work_root
+                / "control/eligible"
+                / f"{_safe_component(command.name, 'command name')}.json"
+            )
+            _atomic_write_bytes_nofollow(
+                family_manifest_path,
+                json.dumps(
+                    family_paths, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8"),
+            )
         argv = list(command.argv)
         argv[argv.index("--instances") + 1] = str(eligible_path)
+        if family_manifest_path is not None:
+            argv.extend(("--family_instances_file", str(family_manifest_path)))
         return replace(command, argv=tuple(argv))
 
     def execute(self, command: CommandSpec, shard_id: str) -> None:
@@ -3191,6 +3266,17 @@ class PipelineServices:
             self.validators[command.name] = (
                 lambda name=command.name: self._validate_command(name)
             )
+        for name in (
+            "dump_mesh",
+            "dump_pbr",
+            "asset_stats",
+            "render_cond",
+            "geometry_bundle",
+            "encode_latent_bundle",
+        ):
+            self.validators.setdefault(
+                name, lambda name=name: self._validate_command(name)
+            )
         self.internal_handlers: dict[str, Callable[[], None]] = {
             "stage_raw": lambda: self.stage_raw(self._active_context()),
             "cleanup_voxels_256": lambda: self.cleanup_voxels(
@@ -3223,13 +3309,16 @@ class PipelineServices:
 
     def _build_parallel_scheduler(self, context: ShardContext):
         commands: dict[str, tuple[str, ...]] = {
-            "prepare": (
-                "stage_raw",
-                "dump_mesh",
-                "dump_pbr",
-                "asset_stats",
+            "prepare": ("stage_raw",),
+            "render": ("prepare_bundle",),
+            "encode": (
+                "geometry_encode_bundle",
+                *(
+                    f"cleanup_voxels_{resolution}"
+                    for resolution in self.config.targets.resolutions
+                ),
             ),
-            "render": ("render_cond",),
+            "finalize": ("validate_outputs",),
         }
         stages = [
             StageSpec(
@@ -3241,65 +3330,28 @@ class PipelineServices:
                 "render",
                 Lane.RENDER,
                 dependencies=("prepare",),
+                cpu_cores=self.config.parallelism.cpu_physical_cores,
                 gpu_indices=tuple(range(self.config.parallelism.gpu_count)),
                 gpu_memory_percent=20.0,
             ),
-        ]
-        dependency = "render"
-        for resolution in self.config.targets.resolutions:
-            geometry = f"geometry_{resolution}"
-            encode = f"encode_{resolution}"
-            commands[geometry] = (
-                f"dual_grid_{resolution}",
-                f"voxelize_pbr_{resolution}",
-            )
-            commands[encode] = (
-                f"encode_shape_{resolution}",
-                f"encode_pbr_{resolution}",
-                f"cleanup_voxels_{resolution}",
-            )
-            stages.extend(
-                (
-                    StageSpec(
-                        geometry,
-                        Lane.GEOMETRY,
-                        dependencies=(dependency,),
-                        cpu_cores=(
-                            self.config.parallelism.cpu_physical_cores
-                        ),
-                    ),
-                    StageSpec(
-                        encode,
-                        Lane.ENCODE,
-                        dependencies=(geometry,),
-                        gpu_indices=tuple(
-                            range(self.config.parallelism.gpu_count)
-                        ),
-                        gpu_memory_percent=float(
-                            self.config.parallelism
-                            .gpu_memory_target_percent
-                        ),
-                    ),
-                )
-            )
-            dependency = encode
-        final = "finalize"
-        commands[final] = (
-            f"encode_ss_{self.config.targets.ss_resolution}",
-            "validate_outputs",
-        )
-
-        stages.append(
             StageSpec(
-                final,
+                "encode",
                 Lane.ENCODE,
-                dependencies=(dependency,),
+                dependencies=("render",),
+                cpu_cores=self.config.parallelism.cpu_physical_cores,
                 gpu_indices=tuple(range(self.config.parallelism.gpu_count)),
                 gpu_memory_percent=float(
                     self.config.parallelism.gpu_memory_target_percent
                 ),
-            )
-        )
+            ),
+            StageSpec(
+                "finalize",
+                Lane.ENCODE,
+                dependencies=("encode",),
+                gpu_indices=tuple(range(self.config.parallelism.gpu_count)),
+                gpu_memory_percent=0.0,
+            ),
+        ]
 
         gate_reader = getattr(
             self.pilot_reader, "p95_peak_local_bytes_for_gate", None
@@ -4536,7 +4588,12 @@ class PipelineServices:
                 }
         return records
 
-    def _validate_pbr_dump_stage(self, context: ShardContext) -> None:
+    def _validate_pbr_dump_stage(
+        self,
+        context: ShardContext,
+        *,
+        attempt_key: str = "dump_pbr",
+    ) -> None:
         pbr_families = tuple(
             f"PBR-{resolution}"
             for resolution in self.config.targets.resolutions
@@ -4552,7 +4609,7 @@ class PipelineServices:
         records = self._pbr_dump_records(context)
         checkpoint = getattr(self.runner, "active_checkpoint", None)
         attempts = (
-            checkpoint.attempts.get("dump_pbr", 0)
+            checkpoint.attempts.get(attempt_key, 0)
             if checkpoint is not None
             else 0
         )
@@ -4582,6 +4639,7 @@ class PipelineServices:
                     "dump_pbr",
                     category=category,
                     reason=reason,
+                    attempt_key=attempt_key,
                 )
                 continue
             raise OutputValidationError(reason)
@@ -4926,6 +4984,7 @@ class PipelineServices:
         *,
         category: str,
         reason: str,
+        attempt_key: str | None = None,
     ) -> None:
         families = set(command_families(self.config, command_name))
         for family in tuple(families):
@@ -4940,7 +4999,7 @@ class PipelineServices:
             )
         checkpoint = getattr(self.runner, "active_checkpoint", None)
         attempts = (
-            checkpoint.attempts.get(command_name, 0)
+            checkpoint.attempts.get(attempt_key or command_name, 0)
             if checkpoint is not None
             else 0
         )
@@ -5898,6 +5957,77 @@ class PipelineServices:
                     lambda asset: self._validate_render_output(
                         context, asset
                     ),
+                )
+                return True
+            if name == "prepare_bundle":
+                self._validate_stage_assets(
+                    context,
+                    lambda asset: self._validate_dump_output(
+                        context, "mesh_dumps", asset
+                    ),
+                )
+                self._validate_pbr_dump_stage(
+                    context, attempt_key="prepare_bundle"
+                )
+                self._validate_asset_stats_stage(context)
+                self._validate_stage_assets(
+                    context,
+                    lambda asset: self._validate_render_output(context, asset),
+                )
+                return True
+            if name == "geometry_encode_bundle":
+                for resolution in self.config.targets.resolutions:
+                    for command_name, directory in (
+                        (f"dual_grid_{resolution}", f"dual_grid_view_{resolution}"),
+                        (
+                            f"voxelize_pbr_{resolution}",
+                            f"pbr_voxels_view_fix_{resolution}",
+                        ),
+                    ):
+                        self._validate_stage_assets(
+                            context,
+                            lambda asset, directory=directory: [
+                                self._validate_voxel_output(
+                                    context, directory, asset, view
+                                )
+                                for view in self.config.targets.views
+                            ],
+                            command_name=command_name,
+                        )
+                for resolution in self.config.targets.resolutions:
+                    for command_name, directory in (
+                        (
+                            f"encode_shape_{resolution}",
+                            self._shape_directory(resolution),
+                        ),
+                        (
+                            f"encode_pbr_{resolution}",
+                            self._pbr_directory(resolution),
+                        ),
+                    ):
+                        self._validate_stage_assets(
+                            context,
+                            lambda asset, resolution=resolution, directory=directory: (
+                                self._validate_resolution_asset(
+                                    context, resolution, directory, asset
+                                )
+                            ),
+                            command_name=command_name,
+                        )
+                self._validate_stage_assets(
+                    context,
+                    lambda asset: [
+                        self._validate_sparse_output(
+                            context.output_root
+                            / self._ss_directory()
+                            / asset
+                            / f"view{view:02d}.npz",
+                            self.config.targets.ss_resolution,
+                            ss=True,
+                        )
+                        for view in self.config.targets.views
+                    ],
+                    command_name=f"encode_ss_{self.config.targets.ss_resolution}",
                 )
                 return True
             for resolution in self.config.targets.resolutions:

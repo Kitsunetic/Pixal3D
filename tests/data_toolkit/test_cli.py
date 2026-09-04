@@ -819,7 +819,7 @@ def test_plan_is_read_only(tmp_config, capsys):
     assert main(["plan", "--config", str(tmp_config), "--gate", "smoke"]) == 0
     output = capsys.readouterr().out
 
-    assert "dump_mesh" in output and "build_packs" in output
+    assert "prepare_bundle" in output and "build_packs" in output
     assert not tmp_config.parent.joinpath("data2").exists()
     assert not tmp_config.parent.joinpath("data3").exists()
     assert not tmp_config.parent.joinpath("local").exists()

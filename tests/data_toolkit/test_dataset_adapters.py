@@ -220,6 +220,42 @@ def test_abo_extracts_only_selected_verified_member(tmp_path):
     assert not (raw / "3dmodels/original/ignored.glb").exists()
 
 
+def test_abo_reuses_verified_local_file_without_opening_archive(
+    monkeypatch, tmp_path
+):
+    module = importlib.import_module("data_toolkit.datasets.ABO")
+    contents = b"already downloaded glb"
+    relative = "raw/3dmodels/original/existing.glb"
+    local = tmp_path / relative
+    local.parent.mkdir(parents=True)
+    local.write_bytes(contents)
+    metadata = pd.DataFrame(
+        [
+            {
+                "file_identifier": "existing.glb",
+                "local_path": relative,
+                "sha256": sha256(contents).hexdigest(),
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        module.tarfile,
+        "open",
+        lambda *_args, **_kwargs: pytest.fail("archive should not be opened"),
+    )
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("archive should not be downloaded"),
+    )
+
+    result = module.download(metadata, str(tmp_path), max_workers=8)
+
+    assert result.to_dict("records") == [
+        {"sha256": sha256(contents).hexdigest(), "local_path": relative}
+    ]
+
+
 @pytest.mark.parametrize("link_type", [tarfile.SYMTYPE, tarfile.LNKTYPE])
 def test_abo_rejects_tar_links_before_extraction(tmp_path, link_type):
     module = importlib.import_module("data_toolkit.datasets.ABO")

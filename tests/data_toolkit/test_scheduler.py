@@ -320,6 +320,6 @@ def test_chunk_context_scopes_all_shared_record_parts(tmp_path, config):
     commands = {command.name: command for command in build_preprocessing_dag(context, config)}
 
     assert context.record_prefix == "chunk000_"
-    for name in ("asset_stats", "render_cond", "dual_grid_256", "voxelize_pbr_256"):
+    for name in ("prepare_bundle", "geometry_encode_bundle"):
         argv = commands[name].argv
         assert argv[argv.index("--record_prefix") + 1] == "chunk000_"

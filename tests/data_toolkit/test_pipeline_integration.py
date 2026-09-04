@@ -42,7 +42,8 @@ def _family_directory(family):
 
 def _expected_leaf_counts(context, config):
     counts = Counter()
-    for command in build_preprocessing_dag(context, config):
+    commands = build_preprocessing_dag(context, config)
+    for command in commands:
         if "--original-script" not in command.argv:
             continue
         index = command.argv.index("--original-script")
@@ -52,6 +53,26 @@ def _expected_leaf_counts(context, config):
             else 1
         )
         counts[command.argv[index + 1]] += workers
+    prepare = next(command for command in commands if command.name == "prepare_bundle")
+    prepare_args = prepare.argv
+    counts.update({"dump_mesh.py": 1, "dump_pbr.py": 1, "asset_stats.py": 1})
+    counts["render_cond.py"] = int(
+        prepare_args[prepare_args.index("--gpu_count") + 1]
+    ) * int(prepare_args[prepare_args.index("--render_workers_per_gpu") + 1])
+    bundle = next(
+        command for command in commands if command.name == "geometry_encode_bundle"
+    )
+    bundle_args = bundle.argv
+    resolutions = bundle_args[bundle_args.index("--resolutions") + 1].split(",")
+    views = bundle_args[bundle_args.index("--view_indices") + 1]
+    start, end = (int(value) for value in views.split("-", 1))
+    geometry_calls = len(resolutions) * (end - start + 1)
+    counts["dual_grid_view.py"] = geometry_calls
+    counts["voxelize_pbr_view.py"] = geometry_calls
+    encoder_ranks = int(bundle_args[bundle_args.index("--encoder_ranks") + 1])
+    counts["encode_shape_latent_view.py"] = len(resolutions) * encoder_ranks
+    counts["encode_pbr_latent_view.py"] = len(resolutions) * encoder_ranks
+    counts["encode_ss_latent_view.py"] = encoder_ranks
     return dict(counts)
 
 

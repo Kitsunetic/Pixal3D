@@ -54,20 +54,46 @@ def download(
 
     raw_dir = Path(output_dir) / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
+    records = metadata.to_dict("records")
+    downloaded_by_sha = {}
+    pending = []
+    for record in records:
+        local_path = record.get("local_path")
+        if isinstance(local_path, str) and local_path:
+            try:
+                local_file = _safe_destination(Path(output_dir), local_path)
+            except ValueError:
+                local_file = None
+            if (
+                local_file is not None
+                and local_file.is_file()
+                and get_file_hash(str(local_file)) == record["sha256"]
+            ):
+                downloaded_by_sha[record["sha256"]] = {
+                    "sha256": record["sha256"],
+                    "local_path": local_path,
+                }
+                continue
+        pending.append(record)
+    if records and not pending:
+        return pd.DataFrame(
+            [downloaded_by_sha[record["sha256"]] for record in records],
+            columns=["sha256", "local_path"],
+        )
+
     archive_path = raw_dir / "abo-3dmodels.tar"
     if not archive_path.is_file():
         subprocess.run(
             ["wget", "-O", str(archive_path), ABO_ARCHIVE_URL], check=True
         )
 
-    downloaded = []
     with tarfile.open(archive_path) as archive:
         members = archive.getmembers()
         for member in members:
             _validate_tar_member(raw_dir, member)
         members_by_name = {member.name: member for member in members}
 
-        for record in metadata.to_dict("records"):
+        for record in pending:
             identifier = str(record["file_identifier"])
             member_name = f"3dmodels/original/{identifier}"
             member = members_by_name.get(member_name)
@@ -77,14 +103,19 @@ def download(
             local_file = _safe_destination(raw_dir, member_name)
             actual_sha256 = get_file_hash(str(local_file))
             if actual_sha256 == record["sha256"]:
-                downloaded.append(
-                    {
-                        "sha256": actual_sha256,
-                        "local_path": f"raw/{member_name}",
-                    }
-                )
+                downloaded_by_sha[actual_sha256] = {
+                    "sha256": actual_sha256,
+                    "local_path": f"raw/{member_name}",
+                }
 
-    return pd.DataFrame(downloaded, columns=["sha256", "local_path"])
+    return pd.DataFrame(
+        [
+            downloaded_by_sha[record["sha256"]]
+            for record in records
+            if record["sha256"] in downloaded_by_sha
+        ],
+        columns=["sha256", "local_path"],
+    )
 
 
 def _process_instance(args):

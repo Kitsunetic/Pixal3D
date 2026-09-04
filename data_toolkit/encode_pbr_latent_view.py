@@ -27,6 +27,7 @@ from data_toolkit.pipeline.validation import (
     validate_scale,
     validate_sparse_latent,
 )
+from data_toolkit.pipeline.geometry_wait import wait_for_geometry
 from data_toolkit.encode_shape_latent_view import (
     _coordinates_to_uint8,
     _run_bounded_pipeline,
@@ -335,6 +336,7 @@ if __name__ == '__main__':
     def load(task, cancel_event):
         sha256, view_idx = task
         output_path, source_scale, destination_scale, vxz_path = task_paths(task)
+        wait_for_geometry(vxz_path, source_scale, cancel_event)
         num_tokens = _existing_sparse_tokens(output_path, opt.resolution)
         if num_tokens is not None:
             try:
