@@ -194,7 +194,6 @@ def _render_cond(
     config,
     blender_path,
     timeout_seconds,
-    boundary_fit_resolution=128,
 ):
     cond_views = build_condition_views(sha256, config)
     final = Path(root) / "renders_cond" / sha256
@@ -214,8 +213,6 @@ def _render_cond(
         json.dumps(cond_views),
         "--cond_resolution",
         str(config.resolution),
-        "--boundary_fit_resolution",
-        str(min(config.resolution, boundary_fit_resolution)),
         "--cond_output_folder",
         str(temporary),
         "--engine",
@@ -284,7 +281,6 @@ def main(argv: list[str] | None = None) -> None:
         help="Number of conditional views to render",
     )
     parser.add_argument("--cond_resolution", type=int, default=512)
-    parser.add_argument("--boundary_fit_resolution", type=int, default=128)
     parser.add_argument("--blender_path", type=str, default=None)
     parser.add_argument("--cycles_device", type=str, default="OPTIX")
     parser.add_argument("--timeout_seconds", type=int, default=900)
@@ -296,8 +292,6 @@ def main(argv: list[str] | None = None) -> None:
     opt = edict(vars(parser.parse_args(argv[1:])))
     if any(separator in opt.record_prefix for separator in ("/", "\\", "\0")):
         raise ValueError("record prefix must not contain path separators")
-    if opt.boundary_fit_resolution <= 0:
-        parser.error("--boundary_fit_resolution must be positive")
     if canonical_source is not None:
         opt.source = canonical_source
     opt.download_root = opt.download_root or opt.root
@@ -405,7 +399,6 @@ def main(argv: list[str] | None = None) -> None:
         config=render_config,
         blender_path=blender_path,
         timeout_seconds=opt.timeout_seconds,
-        boundary_fit_resolution=opt.boundary_fit_resolution,
     )
     cond_rendered = dataset_utils.foreach_instance(
         metadata,

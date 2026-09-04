@@ -180,7 +180,6 @@ def test_render_uses_config_and_atomically_publishes(
     args, kwargs = calls[0]
     assert args[0] == "/tools/blender"
     assert args[args.index("--cond_resolution") + 1] == "512"
-    assert args[args.index("--boundary_fit_resolution") + 1] == "128"
     assert args[args.index("--cycles_device") + 1] == "OPTIX"
     assert json.loads(args[args.index("--cond_views") + 1]) == (
         build_condition_views(sha, config.render)
