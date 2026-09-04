@@ -459,9 +459,15 @@ def main(arg):
     max_retry = 10  # Maximum number of retries per view
     radius_increase_factor = 1.1  # Increase radius by 10% when too close to boundary
     radius_decrease_factor = 0.9  # Decrease radius by 10% when too far from boundary
-    min_boundary_distance = 130 * arg.cond_resolution / 1024
+    fit_resolution = min(arg.boundary_fit_resolution, arg.cond_resolution)
+    fit_boundary_distance = 130 * fit_resolution / 1024
+    final_boundary_distance = 130 * arg.cond_resolution / 1024
+    bpy.context.scene.render.resolution_x = fit_resolution
+    bpy.context.scene.render.resolution_y = fit_resolution
     
     for i, view in enumerate(views):
+        bpy.context.scene.render.resolution_x = fit_resolution
+        bpy.context.scene.render.resolution_y = fit_resolution
         current_radius = view['radius']
         retry_count = 0
         
@@ -489,7 +495,7 @@ def main(arg):
             # Check mask boundary distance
             touches_boundary, too_far, min_dist = check_mask_boundary_distance(
                 output_path,
-                min_boundary_distance=min_boundary_distance,
+                min_boundary_distance=fit_boundary_distance,
             )
             
             if touches_boundary:
@@ -503,7 +509,7 @@ def main(arg):
                 retry_count += 1
                 old_radius = current_radius
                 current_radius *= radius_decrease_factor
-                print(f'[INFO] View {i}: Mask too far from boundary (dist={min_dist}px > {min_boundary_distance}px). Decreasing radius from {old_radius:.4f} to {current_radius:.4f} (retry {retry_count}/{max_retry})')
+                print(f'[INFO] View {i}: Mask too far from boundary (dist={min_dist}px > {fit_boundary_distance}px). Decreasing radius from {old_radius:.4f} to {current_radius:.4f} (retry {retry_count}/{max_retry})')
             else:
                 # Good distance, stop retrying
                 if retry_count > 0:
@@ -514,6 +520,43 @@ def main(arg):
         
         if retry_count >= max_retry:
             print(f'[WARNING] View {i}: Max retries reached. Using final radius: {current_radius:.4f} (dist={min_dist}px)')
+
+        if fit_resolution != arg.cond_resolution:
+            bpy.context.scene.render.resolution_x = arg.cond_resolution
+            bpy.context.scene.render.resolution_y = arg.cond_resolution
+            fallback_retries = 0
+            while True:
+                cam_dir = np.array([
+                    np.cos(view['yaw']) * np.cos(view['pitch']),
+                    np.sin(view['yaw']) * np.cos(view['pitch']),
+                    np.sin(view['pitch'])
+                ])
+                init_random_lighting(cam_dir)
+                cam.location = (
+                    current_radius * cam_dir[0],
+                    current_radius * cam_dir[1],
+                    current_radius * cam_dir[2]
+                )
+                cam.data.lens = 16 / np.tan(view['fov'] / 2)
+                output_path = os.path.join(arg.cond_output_folder, f'{i:03d}.png')
+                bpy.context.scene.render.filepath = output_path
+                bpy.ops.render.render(write_still=True)
+                bpy.context.view_layer.update()
+                touches_boundary, too_far, min_dist = check_mask_boundary_distance(
+                    output_path,
+                    min_boundary_distance=final_boundary_distance,
+                )
+                if not touches_boundary and not too_far:
+                    break
+                if fallback_retries >= max_retry:
+                    print(f'[WARNING] View {i}: Final-resolution fallback exhausted (dist={min_dist}px)')
+                    break
+                fallback_retries += 1
+                retry_count += 1
+                current_radius *= (
+                    radius_increase_factor if touches_boundary
+                    else radius_decrease_factor
+                )
             
         # Save camera parameters (with potentially updated radius)
         metadata = {
@@ -537,6 +580,7 @@ if __name__ == '__main__':
     parser.add_argument('--cond_views', type=str, help='JSON string of views. Contains a list of {yaw, pitch, radius, fov} object.')
     parser.add_argument('--cond_output_folder', type=str, default='/tmp', help='The path the output will be dumped to.')
     parser.add_argument('--cond_resolution', type=int, default=1024, help='Resolution of the conditional images.')
+    parser.add_argument('--boundary_fit_resolution', type=int, default=128, help='Resolution used while fitting camera boundaries.')
     parser.add_argument('--engine', type=str, default='CYCLES', help='Blender internal engine for rendering. E.g. CYCLES, BLENDER_EEVEE, ...')
     parser.add_argument("--cycles_device", type=str, default="OPTIX", help="Cycles compute device type.")
     argv = sys.argv[sys.argv.index("--") + 1:]
