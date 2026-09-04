@@ -66,7 +66,7 @@ def _expected_leaf_counts(context, config):
     resolutions = bundle_args[bundle_args.index("--resolutions") + 1].split(",")
     views = bundle_args[bundle_args.index("--view_indices") + 1]
     start, end = (int(value) for value in views.split("-", 1))
-    geometry_calls = len(resolutions) * (end - start + 1)
+    geometry_calls = end - start + 1
     counts["dual_grid_view.py"] = geometry_calls
     counts["voxelize_pbr_view.py"] = geometry_calls
     encoder_ranks = int(bundle_args[bundle_args.index("--encoder_ranks") + 1])

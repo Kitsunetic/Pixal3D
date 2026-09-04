@@ -104,7 +104,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     def commands() -> tuple[list[str], ...]:
         result: list[list[str]] = []
-        scheduled: list[tuple[int, int, str, str, str]] = []
+        scheduled: dict[tuple[int, str, str, str, Path], list[int]] = {}
         for resolution in arguments.resolutions:
             for view in views:
                 for script, input_flag, output_flag in GEOMETRY_SCRIPTS:
@@ -116,21 +116,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                     instances = family_instances.get(family, default_instances)
                     if not read_asset_ids(instances):
                         continue
-                    scheduled.append(
-                        (resolution, view, script, input_flag, output_flag)
-                    )
+                    scheduled.setdefault(
+                        (view, script, input_flag, output_flag, instances), []
+                    ).append(resolution)
         if not scheduled:
             return ()
         workers_per_job = max(
             1, arguments.max_workers // len(scheduled)
         )
-        for resolution, view, script, input_flag, output_flag in scheduled:
-            family = (
-                f"shape-{resolution}"
-                if script == "dual_grid_view.py"
-                else f"PBR-{resolution}"
-            )
-            instances = family_instances.get(family, default_instances)
+        for (view, script, input_flag, output_flag, instances), resolutions in scheduled.items():
             input_root = (
                 arguments.mesh_dump_root
                 if input_flag == "--mesh_dump_root"
@@ -152,7 +146,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         output_flag,
                         arguments.voxel_root,
                         "--resolution",
-                        str(resolution),
+                        ",".join(str(resolution) for resolution in resolutions),
                         "--view_indices",
                         str(view),
                         "--max_workers",
