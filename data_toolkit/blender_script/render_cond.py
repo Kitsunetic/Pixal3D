@@ -52,7 +52,6 @@ def init_render(engine='CYCLES', resolution=512):
     bpy.context.scene.cycles.transparent_max_bounces = 3
     bpy.context.scene.cycles.transmission_bounces = 3
     bpy.context.scene.cycles.use_denoising = True
-    bpy.context.scene.cycles.use_persistent_data = True
     
 
 def init_scene() -> None:
