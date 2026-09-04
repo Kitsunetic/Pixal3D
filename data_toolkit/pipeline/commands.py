@@ -104,7 +104,7 @@ def choose_worker_profile(
             encoder_ranks=config.worker_tuning.encoder_ranks,
             render_workers_per_gpu=(
                 config.parallelism.render_workers_per_gpu_steps[
-                    0
+                    min(1, len(config.parallelism.render_workers_per_gpu_steps) - 1)
                 ]
             ),
         )
