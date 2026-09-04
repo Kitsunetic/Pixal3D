@@ -95,7 +95,7 @@ def test_geometry_bundle_skips_excluded_pbr_families(tmp_path, monkeypatch):
         "--transform_root", str(tmp_path), "--voxel_root", str(tmp_path),
         "--resolutions", "256,512,1024", "--view_indices", "0-1",
         "--ss_resolution", "64",
-        "--max_workers", "11", "--native_threads", "4",
+        "--max_workers", "11", "--native_threads", "1",
         "--family_instances_file", str(family_manifest),
     ]) == 0
 
@@ -103,6 +103,7 @@ def test_geometry_bundle_skips_excluded_pbr_families(tmp_path, monkeypatch):
     assert all("dual_grid_view.py" in command[1] for command in launched)
     assert all(command[command.index("--resolution") + 1] == "256,512,1024" for command in launched)
     assert all(command[command.index("--max_workers") + 1] == "5" for command in launched)
+    assert all(command[command.index("--native_threads") + 1] == "4" for command in launched)
 
 
 def test_encoder_bundle_skips_excluded_pbr_families(tmp_path, monkeypatch):
