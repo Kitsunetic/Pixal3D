@@ -250,23 +250,23 @@ def _atomic_vxz(path):
 
 
 def _voxel(directory):
-    resolution = int(_option("--resolution"))
-    root_name = (
-        f"dual_grid_view_{resolution}"
-        if directory == "dual_grid"
-        else f"pbr_voxels_view_fix_{resolution}"
-    )
-    root = Path(
-        _option("--dual_grid_root" if directory == "dual_grid" else "--pbr_voxel_root")
-    ) / root_name
-    for asset_sha in _instances():
-        for view in (0, 1):
-            output = root / asset_sha / f"view{view:02d}.vxz"
-            _atomic_json(
-                output.with_name(f"view{view:02d}_scale.json"),
-                {"total_scale": 1.0},
-            )
-            _atomic_vxz(output)
+    resolutions = tuple(int(value) for value in _option("--resolution").split(","))
+    root_option = "--dual_grid_root" if directory == "dual_grid" else "--pbr_voxel_root"
+    for resolution in resolutions:
+        root_name = (
+            f"dual_grid_view_{resolution}"
+            if directory == "dual_grid"
+            else f"pbr_voxels_view_fix_{resolution}"
+        )
+        root = Path(_option(root_option)) / root_name
+        for asset_sha in _instances():
+            for view in (0, 1):
+                output = root / asset_sha / f"view{view:02d}.vxz"
+                _atomic_json(
+                    output.with_name(f"view{view:02d}_scale.json"),
+                    {"total_scale": 1.0},
+                )
+                _atomic_vxz(output)
 
 
 def _atomic_sparse(path, resolution, ss=False):
