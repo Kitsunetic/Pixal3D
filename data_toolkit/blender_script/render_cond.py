@@ -42,6 +42,7 @@ def init_render(engine='CYCLES', resolution=512):
     bpy.context.scene.render.resolution_percentage = 100
     bpy.context.scene.render.image_settings.file_format = 'PNG'
     bpy.context.scene.render.image_settings.color_mode = 'RGBA'
+    bpy.context.scene.render.image_settings.compression = 0
     bpy.context.scene.render.film_transparent = True
     
     bpy.context.scene.cycles.samples = 32
