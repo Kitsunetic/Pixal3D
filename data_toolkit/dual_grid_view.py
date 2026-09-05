@@ -27,7 +27,6 @@ if __package__:
     from .utils import get_new_camera_matrix, transform_mesh, sphere_normalize_torch
     from .pipeline.atomic_io import atomic_write_json
     from .pipeline.dataset_adapter import process_single_metadata_row
-    from .pipeline.geometry_input_cache import load_or_prepare
     from .pipeline.parallelism import (
         GeometryProfile,
         configure_geometry_threads,
@@ -39,7 +38,6 @@ else:
     from utils import get_new_camera_matrix, transform_mesh, sphere_normalize_torch
     from pipeline.atomic_io import atomic_write_json
     from pipeline.dataset_adapter import process_single_metadata_row
-    from pipeline.geometry_input_cache import load_or_prepare
     from pipeline.parallelism import (
         GeometryProfile,
         configure_geometry_threads,
@@ -491,41 +489,28 @@ def _dual_grid_mesh_view(
                             print(f'Mesh dump not found for {sha256}, skipping')
                             return {'sha256': sha256, 'error': 'Mesh dump not found'}
                         
-                        def prepare_mesh():
-                            with open(mesh_file, 'rb') as f:
-                                dump = pickle.load(f)
-
-                            start = 0
-                            vertices_list = []
-                            faces_list = []
-                            for obj in dump['objects']:
-                                if obj['vertices'].size == 0 or obj['faces'].size == 0:
-                                    continue
-                                vertices_list.append(obj['vertices'])
-                                faces_list.append(obj['faces'] + start)
-                                start += len(obj['vertices'])
-
-                            if not vertices_list:
-                                raise ValueError('No valid mesh data')
-
-                            vertices = torch.from_numpy(
-                                np.concatenate(vertices_list, axis=0)
-                            ).float().contiguous()
-                            prepared_faces = torch.from_numpy(
-                                np.concatenate(faces_list, axis=0)
-                            ).long().contiguous()
-                            prepared_vertices, _, prepared_radius = (
-                                sphere_normalize_torch(vertices)
-                            )
-                            return prepared_vertices, prepared_faces, prepared_radius
-
-                        try:
-                            vertices_sphere, faces, sphere_radius = load_or_prepare(
-                                'mesh', sha256, Path(mesh_file), prepare_mesh
-                            )
-                        except ValueError as error:
-                            print(f'{error} for {sha256}, skipping')
-                            return {'sha256': sha256, 'error': str(error)}
+                        with open(mesh_file, 'rb') as f:
+                            dump = pickle.load(f)
+                        
+                        start = 0
+                        vertices_list = []
+                        faces_list = []
+                        for obj in dump['objects']:
+                            if obj['vertices'].size == 0 or obj['faces'].size == 0:
+                                continue
+                            vertices_list.append(obj['vertices'])
+                            faces_list.append(obj['faces'] + start)
+                            start += len(obj['vertices'])
+                        
+                        if len(vertices_list) == 0:
+                            print(f'No valid mesh data for {sha256}, skipping')
+                            return {'sha256': sha256, 'error': 'No valid mesh data'}
+                        
+                        vertices = torch.from_numpy(np.concatenate(vertices_list, axis=0)).float().contiguous()
+                        faces = torch.from_numpy(np.concatenate(faces_list, axis=0)).long().contiguous()
+                        
+                        # Sphere normalization (for multi-view transform) - CPU only
+                        vertices_sphere, sphere_center, sphere_radius = sphere_normalize_torch(vertices)
                     
                     # Get transform for current view
                     transform = transform_mats[view_idx]
