@@ -171,7 +171,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     run_bounded(
         tuple((command, None) for command in launch),
-        min(len(launch), arguments.max_workers),
+        min(len(launch), arguments.max_workers, 3),
     )
     return 0
 
