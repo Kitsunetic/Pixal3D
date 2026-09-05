@@ -461,12 +461,10 @@ def main(arg):
     radius_increase_factor = 1.1  # Increase radius by 10% when too close to boundary
     radius_decrease_factor = 0.9  # Decrease radius by 10% when too far from boundary
     min_boundary_distance = 130 * arg.cond_resolution / 1024
-    output_format = bpy.context.scene.render.image_settings.file_format
     
     for i, view in enumerate(views):
         current_radius = view['radius']
         retry_count = 0
-        fitting_path = os.path.join(arg.cond_output_folder, f'.boundary-{i:03d}.tga')
         cam_dir = np.array([
             np.cos(view['yaw']) * np.cos(view['pitch']),
             np.sin(view['yaw']) * np.cos(view['pitch']),
@@ -482,8 +480,8 @@ def main(arg):
             )
             cam.data.lens = 16 / np.tan(view['fov'] / 2)
             
-            bpy.context.scene.render.image_settings.file_format = 'TARGA'
-            bpy.context.scene.render.filepath = fitting_path
+            output_path = os.path.join(arg.cond_output_folder, f'{i:03d}.png')
+            bpy.context.scene.render.filepath = output_path
                 
             # Render the scene
             bpy.ops.render.render(write_still=True)
@@ -491,7 +489,7 @@ def main(arg):
             
             # Check mask boundary distance
             touches_boundary, too_far, min_dist = check_mask_boundary_distance(
-                fitting_path,
+                output_path,
                 min_boundary_distance=min_boundary_distance,
             )
             
@@ -517,13 +515,6 @@ def main(arg):
         
         if retry_count >= max_retry:
             print(f'[WARNING] View {i}: Max retries reached. Using final radius: {current_radius:.4f} (dist={min_dist}px)')
-
-        bpy.context.scene.render.image_settings.file_format = output_format
-        output_path = os.path.join(arg.cond_output_folder, f'{i:03d}.png')
-        bpy.context.scene.render.filepath = output_path
-        bpy.data.images['Render Result'].save_render(output_path, scene=bpy.context.scene)
-        if os.path.exists(fitting_path):
-            os.unlink(fitting_path)
             
         # Save camera parameters (with potentially updated radius)
         metadata = {
