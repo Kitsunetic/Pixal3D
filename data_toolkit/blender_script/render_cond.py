@@ -379,11 +379,12 @@ def check_mask_boundary_distance(
         - min_distance: Minimum distance from mask to any boundary
     """
     img = Image.open(image_path)
-    if img.mode != 'RGBA':
+    if img.mode == 'L':
+        alpha = np.array(img)
+    elif img.mode == 'RGBA':
+        alpha = np.array(img)[:, :, 3]
+    else:
         return False, False, 0
-    
-    # Get alpha channel
-    alpha = np.array(img)[:, :, 3]
     h, w = alpha.shape
     
     # Find all pixels with alpha > threshold (mask pixels)
@@ -461,6 +462,13 @@ def main(arg):
     radius_increase_factor = 1.1  # Increase radius by 10% when too close to boundary
     radius_decrease_factor = 0.9  # Decrease radius by 10% when too far from boundary
     min_boundary_distance = 130 * arg.cond_resolution / 1024
+    scene = bpy.context.scene
+    scene.use_nodes = True
+    nodes = scene.node_tree.nodes
+    nodes.clear()
+    render_layers = nodes.new(type='CompositorNodeRLayers')
+    composite = nodes.new(type='CompositorNodeComposite')
+    scene.node_tree.links.new(render_layers.outputs['Alpha'], composite.inputs['Image'])
     
     for i, view in enumerate(views):
         current_radius = view['radius']
@@ -482,6 +490,7 @@ def main(arg):
             
             output_path = os.path.join(arg.cond_output_folder, f'{i:03d}.png')
             bpy.context.scene.render.filepath = output_path
+            scene.render.image_settings.color_mode = 'BW'
                 
             # Render the scene
             bpy.ops.render.render(write_still=True)
@@ -515,6 +524,13 @@ def main(arg):
         
         if retry_count >= max_retry:
             print(f'[WARNING] View {i}: Max retries reached. Using final radius: {current_radius:.4f} (dist={min_dist}px)')
+
+        scene.render.image_settings.color_mode = 'RGBA'
+        scene.use_nodes = False
+        output_path = os.path.join(arg.cond_output_folder, f'{i:03d}.png')
+        bpy.context.scene.render.filepath = output_path
+        bpy.data.images['Render Result'].save_render(output_path, scene=scene)
+        scene.use_nodes = True
             
         # Save camera parameters (with potentially updated radius)
         metadata = {
