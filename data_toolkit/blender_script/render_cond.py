@@ -381,19 +381,8 @@ def check_mask_boundary_distance(
     if img.mode != 'RGBA':
         return False, False, 0
     
-    return check_alpha_boundary_distance(
-        np.array(img)[:, :, 3],
-        threshold=threshold,
-        min_boundary_distance=min_boundary_distance,
-    )
-
-
-def check_alpha_boundary_distance(
-    alpha: np.ndarray,
-    threshold: int = 0,
-    min_boundary_distance: float = 130,
-) -> Tuple[bool, bool, int]:
-    """Check an 8-bit alpha mask distance to the image boundary."""
+    # Get alpha channel
+    alpha = np.array(img)[:, :, 3]
     h, w = alpha.shape
     
     # Find all pixels with alpha > threshold (mask pixels)
@@ -490,19 +479,16 @@ def main(arg):
             )
             cam.data.lens = 16 / np.tan(view['fov'] / 2)
             
-            # Render without encoding a PNG for intermediate boundary retries.
-            bpy.ops.render.render()
+            output_path = os.path.join(arg.cond_output_folder, f'{i:03d}.png')
+            bpy.context.scene.render.filepath = output_path
+                
+            # Render the scene
+            bpy.ops.render.render(write_still=True)
             bpy.context.view_layer.update()
             
-            # Blender stores the completed render as linear floating-point RGBA.
-            # PNG RGBA export quantizes alpha to 8 bits, so use the same mask domain
-            # as the original PNG/Pillow boundary check before applying alpha > 0.
-            render_result = bpy.data.images['Render Result']
-            alpha = np.asarray(render_result.pixels[:], dtype=np.float32)[3::4]
-            alpha = np.rint(np.clip(alpha, 0.0, 1.0) * 255.0).astype(np.uint8)
-            alpha = alpha.reshape(render_result.size[1], render_result.size[0])
-            touches_boundary, too_far, min_dist = check_alpha_boundary_distance(
-                alpha,
+            # Check mask boundary distance
+            touches_boundary, too_far, min_dist = check_mask_boundary_distance(
+                output_path,
                 min_boundary_distance=min_boundary_distance,
             )
             
@@ -528,12 +514,6 @@ def main(arg):
         
         if retry_count >= max_retry:
             print(f'[WARNING] View {i}: Max retries reached. Using final radius: {current_radius:.4f} (dist={min_dist}px)')
-
-        # The render result is the same image that the previous implementation
-        # wrote in the final loop iteration. Persist it once after fitting.
-        output_path = os.path.join(arg.cond_output_folder, f'{i:03d}.png')
-        bpy.context.scene.render.filepath = output_path
-        bpy.data.images['Render Result'].save_render(output_path, scene=bpy.context.scene)
             
         # Save camera parameters (with potentially updated radius)
         metadata = {
