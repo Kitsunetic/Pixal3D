@@ -29,6 +29,7 @@ if __package__:
     from .utils import get_new_camera_matrix, sphere_normalize_torch
     from .pipeline.atomic_io import atomic_write_json
     from .pipeline.dataset_adapter import process_single_metadata_row
+    from .pipeline.geometry_input_cache import load_or_prepare
     from .pipeline.parallelism import (
         GeometryProfile,
         configure_geometry_threads,
@@ -40,6 +41,7 @@ else:
     from utils import get_new_camera_matrix, sphere_normalize_torch
     from pipeline.atomic_io import atomic_write_json
     from pipeline.dataset_adapter import process_single_metadata_row
+    from pipeline.geometry_input_cache import load_or_prepare
     from pipeline.parallelism import (
         GeometryProfile,
         configure_geometry_threads,
@@ -724,11 +726,14 @@ def _pbr_voxelize_view(
                             print(f'PBR dump not found for {sha256}, skipping')
                             return {'sha256': sha256, 'error': 'PBR dump not found'}
 
-                        with open(pbr_dump_file, 'rb') as f:
-                            dump = pickle.load(f)
+                        def prepare_dump():
+                            with open(pbr_dump_file, 'rb') as f:
+                                raw_dump = pickle.load(f)
+                            return prepare_pbr_dump(raw_dump)
 
-                        # Prepare dump data
-                        dump = prepare_pbr_dump(dump)
+                        dump = load_or_prepare(
+                            'pbr', sha256, Path(pbr_dump_file), prepare_dump
+                        )
 
                         if len(dump['objects']) == 0:
                             print(f'No valid objects in PBR dump for {sha256}, skipping')
