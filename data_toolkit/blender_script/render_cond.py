@@ -11,7 +11,7 @@ from PIL import Image
 """=============== BLENDER ==============="""
 
 IMPORT_FUNCTIONS: Dict[str, Callable] = {
-    "obj": bpy.ops.import_scene.obj,
+    "obj": bpy.ops.import_scene.obj if bpy.app.version[0] < 4 else bpy.ops.wm.obj_import,
     "glb": bpy.ops.import_scene.gltf,
     "gltf": bpy.ops.import_scene.gltf,
     "usd": bpy.ops.import_scene.usd,
@@ -42,9 +42,9 @@ def init_render(engine='CYCLES', resolution=512):
     bpy.context.scene.render.resolution_percentage = 100
     bpy.context.scene.render.image_settings.file_format = 'PNG'
     bpy.context.scene.render.image_settings.color_mode = 'RGBA'
+    bpy.context.scene.render.image_settings.compression = 1
     bpy.context.scene.render.film_transparent = True
     
-    bpy.context.scene.cycles.device = 'GPU'
     bpy.context.scene.cycles.samples = 32
     bpy.context.scene.cycles.filter_type = 'BOX'
     bpy.context.scene.cycles.filter_width = 1
@@ -53,9 +53,6 @@ def init_render(engine='CYCLES', resolution=512):
     bpy.context.scene.cycles.transparent_max_bounces = 3
     bpy.context.scene.cycles.transmission_bounces = 3
     bpy.context.scene.cycles.use_denoising = True
-        
-    bpy.context.preferences.addons['cycles'].preferences.get_devices()
-    bpy.context.preferences.addons['cycles'].preferences.compute_device_type = 'CUDA'
     
 
 def init_scene() -> None:
@@ -364,7 +361,11 @@ def get_transform_matrix(obj: bpy.types.Object) -> list:
     return matrix
 
 
-def check_mask_boundary_distance(image_path: str, threshold: int = 0) -> Tuple[bool, bool, int]:
+def check_mask_boundary_distance(
+    image_path: str,
+    threshold: int = 0,
+    min_boundary_distance: float = 130,
+) -> Tuple[bool, bool, int]:
     """Check the rendered object's mask distance to image boundary.
     
     Args:
@@ -408,8 +409,8 @@ def check_mask_boundary_distance(image_path: str, threshold: int = 0) -> Tuple[b
     # Check if touches boundary (distance <= 0)
     touches_boundary = min_distance <= 0
     
-    # Check if too far from boundary (distance > 130 pixels)
-    too_far = min_distance > 130
+    # Check if too far from boundary for the configured render resolution.
+    too_far = min_distance > min_boundary_distance
     
     return touches_boundary, too_far, min_distance
 
@@ -430,7 +431,19 @@ def main(arg):
     cam = init_camera()
     init_uniform_lighting()
     print('[INFO] Camera and lighting initialized.')
-        
+
+    preferences = bpy.context.preferences.addons["cycles"].preferences
+    preferences.compute_device_type = arg.cycles_device
+    preferences.get_devices()
+    selected_devices = []
+    for device in preferences.devices:
+        device.use = device.type == arg.cycles_device
+        if device.use:
+            selected_devices.append(device.name)
+    if not selected_devices:
+        raise RuntimeError(f"No {arg.cycles_device} device selected")
+    bpy.context.scene.cycles.device = "GPU"
+
     # ============= Render conditional views =============
     init_render(engine=arg.engine, resolution=arg.cond_resolution)
     # Create a list of views
@@ -438,6 +451,7 @@ def main(arg):
         "aabb": [[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]],
         "scale": scale,
         "offset": [offset.x, offset.y, offset.z],
+        "selected_devices": selected_devices,
         "frames": []
     }
     views = json.loads(arg.cond_views)
@@ -446,19 +460,19 @@ def main(arg):
     max_retry = 10  # Maximum number of retries per view
     radius_increase_factor = 1.1  # Increase radius by 10% when too close to boundary
     radius_decrease_factor = 0.9  # Decrease radius by 10% when too far from boundary
-    min_boundary_distance = 130  # Minimum distance to boundary in pixels
+    min_boundary_distance = 130 * arg.cond_resolution / 1024
     
     for i, view in enumerate(views):
         current_radius = view['radius']
         retry_count = 0
+        cam_dir = np.array([
+            np.cos(view['yaw']) * np.cos(view['pitch']),
+            np.sin(view['yaw']) * np.cos(view['pitch']),
+            np.sin(view['pitch'])
+        ])
+        init_random_lighting(cam_dir)
         
         while retry_count < max_retry:
-            cam_dir = np.array([
-                np.cos(view['yaw']) * np.cos(view['pitch']),
-                np.sin(view['yaw']) * np.cos(view['pitch']),
-                np.sin(view['pitch'])
-            ])
-            init_random_lighting(cam_dir)
             cam.location = (
                 current_radius * cam_dir[0],
                 current_radius * cam_dir[1],
@@ -474,7 +488,10 @@ def main(arg):
             bpy.context.view_layer.update()
             
             # Check mask boundary distance
-            touches_boundary, too_far, min_dist = check_mask_boundary_distance(output_path)
+            touches_boundary, too_far, min_dist = check_mask_boundary_distance(
+                output_path,
+                min_boundary_distance=min_boundary_distance,
+            )
             
             if touches_boundary:
                 # Object is too close to boundary, increase radius
@@ -522,8 +539,8 @@ if __name__ == '__main__':
     parser.add_argument('--cond_output_folder', type=str, default='/tmp', help='The path the output will be dumped to.')
     parser.add_argument('--cond_resolution', type=int, default=1024, help='Resolution of the conditional images.')
     parser.add_argument('--engine', type=str, default='CYCLES', help='Blender internal engine for rendering. E.g. CYCLES, BLENDER_EEVEE, ...')
+    parser.add_argument("--cycles_device", type=str, default="OPTIX", help="Cycles compute device type.")
     argv = sys.argv[sys.argv.index("--") + 1:]
     args = parser.parse_args(argv)
 
     main(args)
-    

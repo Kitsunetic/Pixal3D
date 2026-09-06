@@ -1,0 +1,17 @@
+[Unit]
+Description=Pixal3D Node11 GPU presence watchdog
+
+[Service]
+Type=simple
+Environment=PIXAL3D_PRESENCE_CONTAINER=youngwoo_pixal3d
+Environment=PIXAL3D_PRESENCE_GPUS=0,1,2,3,4,5,6,7
+Environment=PIXAL3D_PRESENCE_PAYLOAD_MIB=16
+Environment=PIXAL3D_PRESENCE_INTERVAL_SECONDS=30
+ExecStart=/home/youngwoo/dev/Pixal3D-node11/scripts/node11_gpu_presence_watchdog.sh
+Restart=always
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=10
+
+[Install]
+WantedBy=default.target
