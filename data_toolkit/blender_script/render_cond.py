@@ -378,11 +378,12 @@ def check_mask_boundary_distance(
         - too_far_from_boundary: True if the mask is too far from all boundaries (>80 pixels)
         - min_distance: Minimum distance from mask to any boundary
     """
-    with Image.open(image_path) as img:
-        if img.mode != 'RGBA':
-            return False, False, 0
-
-        alpha = np.array(img.getchannel('A'))
+    img = Image.open(image_path)
+    if img.mode != 'RGBA':
+        return False, False, 0
+    
+    # Get alpha channel
+    alpha = np.array(img)[:, :, 3]
     h, w = alpha.shape
     
     # Find all pixels with alpha > threshold (mask pixels)
