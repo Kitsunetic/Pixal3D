@@ -465,7 +465,6 @@ def main(arg):
     for i, view in enumerate(views):
         current_radius = view['radius']
         retry_count = 0
-        bpy.context.scene.cycles.samples = 1
         cam_dir = np.array([
             np.cos(view['yaw']) * np.cos(view['pitch']),
             np.sin(view['yaw']) * np.cos(view['pitch']),
@@ -516,10 +515,6 @@ def main(arg):
         
         if retry_count >= max_retry:
             print(f'[WARNING] View {i}: Max retries reached. Using final radius: {current_radius:.4f} (dist={min_dist}px)')
-
-        bpy.context.scene.cycles.samples = 32
-        bpy.context.scene.render.filepath = output_path
-        bpy.ops.render.render(write_still=True)
             
         # Save camera parameters (with potentially updated radius)
         metadata = {
