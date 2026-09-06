@@ -378,13 +378,12 @@ def check_mask_boundary_distance(
         - too_far_from_boundary: True if the mask is too far from all boundaries (>80 pixels)
         - min_distance: Minimum distance from mask to any boundary
     """
-    with Image.open(image_path) as img:
-        if img.mode == 'RGBA':
-            alpha = np.array(img)[:, :, 3]
-        elif img.mode == 'L':
-            alpha = np.array(img)
-        else:
-            return False, False, 0
+    img = Image.open(image_path)
+    if img.mode != 'RGBA':
+        return False, False, 0
+    
+    # Get alpha channel
+    alpha = np.array(img)[:, :, 3]
     h, w = alpha.shape
     
     # Find all pixels with alpha > threshold (mask pixels)
@@ -447,19 +446,6 @@ def main(arg):
 
     # ============= Render conditional views =============
     init_render(engine=arg.engine, resolution=arg.cond_resolution)
-    scene = bpy.context.scene
-    scene.use_nodes = True
-    nodes = scene.node_tree.nodes
-    links = scene.node_tree.links
-    nodes.clear()
-    render_layers = nodes.new(type='CompositorNodeRLayers')
-    boundary_output = nodes.new(type='CompositorNodeOutputFile')
-    boundary_output.base_path = arg.cond_output_folder
-    boundary_output.format.file_format = 'PNG'
-    boundary_output.format.color_mode = 'BW'
-    boundary_output.format.color_depth = '8'
-    boundary_output.format.compression = 1
-    links.new(render_layers.outputs['Alpha'], boundary_output.inputs[0])
     # Create a list of views
     to_export = {
         "aabb": [[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]],
@@ -494,27 +480,18 @@ def main(arg):
             )
             cam.data.lens = 16 / np.tan(view['fov'] / 2)
             
-            boundary_stem = f'.boundary-{i:03d}-{retry_count:02d}'
-            boundary_output.file_slots[0].path = boundary_stem
+            output_path = os.path.join(arg.cond_output_folder, f'{i:03d}.png')
+            bpy.context.scene.render.filepath = output_path
                 
-            # Render the scene and write only its alpha channel for boundary fitting.
-            bpy.ops.render.render()
+            # Render the scene
+            bpy.ops.render.render(write_still=True)
             bpy.context.view_layer.update()
-
-            boundary_paths = glob.glob(
-                os.path.join(arg.cond_output_folder, f'{boundary_stem}*.png')
-            )
-            if len(boundary_paths) != 1:
-                raise RuntimeError(
-                    f'Expected one boundary mask for view {i}, found {boundary_paths}'
-                )
             
             # Check mask boundary distance
             touches_boundary, too_far, min_dist = check_mask_boundary_distance(
-                boundary_paths[0],
+                output_path,
                 min_boundary_distance=min_boundary_distance,
             )
-            os.remove(boundary_paths[0])
             
             if touches_boundary:
                 # Object is too close to boundary, increase radius
@@ -538,9 +515,6 @@ def main(arg):
         
         if retry_count >= max_retry:
             print(f'[WARNING] View {i}: Max retries reached. Using final radius: {current_radius:.4f} (dist={min_dist}px)')
-
-        output_path = os.path.join(arg.cond_output_folder, f'{i:03d}.png')
-        bpy.data.images['Render Result'].save_render(output_path, scene=scene)
             
         # Save camera parameters (with potentially updated radius)
         metadata = {
