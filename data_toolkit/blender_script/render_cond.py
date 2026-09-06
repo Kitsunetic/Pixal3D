@@ -1,4 +1,4 @@
-import argparse, sys, os, math, re, glob, shutil
+import argparse, sys, os, math, re, glob
 from typing import *
 import bpy
 from mathutils import Vector, Matrix
@@ -465,9 +465,6 @@ def main(arg):
     for i, view in enumerate(views):
         current_radius = view['radius']
         retry_count = 0
-        retry_path = os.path.join(
-            '/dev/shm', f'pixal3d-boundary-{os.getpid()}-{i:03d}.png'
-        )
         cam_dir = np.array([
             np.cos(view['yaw']) * np.cos(view['pitch']),
             np.sin(view['yaw']) * np.cos(view['pitch']),
@@ -484,7 +481,7 @@ def main(arg):
             cam.data.lens = 16 / np.tan(view['fov'] / 2)
             
             output_path = os.path.join(arg.cond_output_folder, f'{i:03d}.png')
-            bpy.context.scene.render.filepath = retry_path
+            bpy.context.scene.render.filepath = output_path
                 
             # Render the scene
             bpy.ops.render.render(write_still=True)
@@ -492,7 +489,7 @@ def main(arg):
             
             # Check mask boundary distance
             touches_boundary, too_far, min_dist = check_mask_boundary_distance(
-                retry_path,
+                output_path,
                 min_boundary_distance=min_boundary_distance,
             )
             
@@ -518,10 +515,6 @@ def main(arg):
         
         if retry_count >= max_retry:
             print(f'[WARNING] View {i}: Max retries reached. Using final radius: {current_radius:.4f} (dist={min_dist}px)')
-
-        output_path = os.path.join(arg.cond_output_folder, f'{i:03d}.png')
-        shutil.copyfile(retry_path, output_path)
-        os.unlink(retry_path)
             
         # Save camera parameters (with potentially updated radius)
         metadata = {
