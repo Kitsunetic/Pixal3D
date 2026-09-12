@@ -459,7 +459,7 @@ docker exec "youngwoo_diyscene_fast_${NODE_ID}" bash -lc "
   cd /root/dev/Pixal3D-fast
   test \"\$(cat .pixal3d-runtime-commit)\" = \"${TESTED_CODE_COMMIT}\"
   source /home/rvi/conda/etc/profile.d/conda.sh
-  conda activate pixal3d
+  conda activate torch
   CONFIG=data_toolkit/configs/multiview_preprocess.yaml
   export PIXAL3D_RENDERER_MODE=native
   export PIXAL3D_NATIVE_WORKER_MAX_ASSETS=8

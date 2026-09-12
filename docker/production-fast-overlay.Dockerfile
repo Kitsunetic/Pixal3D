@@ -4,6 +4,7 @@ FROM ${BASE_IMAGE}
 ARG PIXAL3D_RUNTIME_COMMIT
 LABEL org.opencontainers.image.revision=${PIXAL3D_RUNTIME_COMMIT}
 
+USER root
 WORKDIR /root/dev/Pixal3D-fast
 COPY . .
 RUN test -n "${PIXAL3D_RUNTIME_COMMIT}" \
