@@ -461,6 +461,30 @@ def test_objaverse_instance_rejects_duplicate_zip_members(tmp_path):
     assert result is None
 
 
+def test_objaverse_instance_rejects_oversized_zip_members(monkeypatch, tmp_path):
+    module = importlib.import_module("data_toolkit.datasets.ObjaverseXL")
+    monkeypatch.setattr(module, "MAX_ARCHIVE_MEMBER_BYTES", 4)
+    archive = tmp_path / "raw/github/repos/example/repository.zip"
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("models/object.glb", b"too-large")
+
+    result = module._process_instance(
+        (
+            {
+                "sha256": sha256(b"too-large").hexdigest(),
+                "local_path": (
+                    "raw/github/repos/example/repository.zip/models/object.glb"
+                ),
+            },
+            str(tmp_path),
+            lambda *_args: pytest.fail("oversized members must not be consumed"),
+        )
+    )
+
+    assert result is None
+
+
 def test_objaverse_instance_streams_only_selected_regular_zip_member(tmp_path):
     module = importlib.import_module("data_toolkit.datasets.ObjaverseXL")
     archive = tmp_path / "raw/github/repos/example/repository.zip"

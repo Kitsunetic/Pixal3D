@@ -35,6 +35,7 @@ except ModuleNotFoundError as error:
 
 
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+MAX_ARCHIVE_MEMBER_BYTES = 8 * 1024**3
 
 
 def _expected_digest(row) -> str:
@@ -128,6 +129,11 @@ def _selected_zip_member(
         if name == member.as_posix():
             if info.is_dir():
                 raise ValueError(f"Objaverse ZIP member is a directory: {name}")
+            if info.file_size > MAX_ARCHIVE_MEMBER_BYTES:
+                raise ValueError(
+                    f"Objaverse ZIP member exceeds {MAX_ARCHIVE_MEMBER_BYTES} "
+                    f"bytes: {name}"
+                )
             selected = info
     if selected is None:
         raise ValueError(f"Objaverse ZIP member is missing: {member}")

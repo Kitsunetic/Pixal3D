@@ -166,9 +166,7 @@ def _write_render_fixture(
     )
 
 
-def test_render_uses_config_and_atomically_publishes(
-    monkeypatch, tmp_path, config
-):
+def test_render_uses_config_and_atomically_publishes(monkeypatch, tmp_path, config):
     sha = "a" * 64
     render_root = tmp_path / "render"
     final = render_root / "renders_cond" / sha
@@ -200,10 +198,7 @@ def test_render_uses_config_and_atomically_publishes(
     assert args[0] == "/tools/blender"
     assert args[args.index("--cond_resolution") + 1] == "512"
     assert args[args.index("--boundary_fit_resolution") + 1] == "128"
-    assert (
-        args[args.index("--boundary_fit_engine") + 1]
-        == "BLENDER_EEVEE_NEXT"
-    )
+    assert args[args.index("--boundary_fit_engine") + 1] == "BLENDER_EEVEE_NEXT"
     assert args[args.index("--boundary_fit_samples") + 1] == "1"
     assert args[args.index("--cycles_device") + 1] == "OPTIX"
     assert json.loads(args[args.index("--cond_views") + 1]) == (
@@ -291,9 +286,7 @@ def test_native_renderer_rejects_a_different_blender_version(
         )
 
 
-def test_render_can_seed_lighting_for_output_comparison(
-    monkeypatch, tmp_path, config
-):
+def test_render_can_seed_lighting_for_output_comparison(monkeypatch, tmp_path, config):
     calls = []
 
     def fake_run(args, **_kwargs):
@@ -404,9 +397,7 @@ def test_exchange_failure_keeps_existing_output_and_cleans_temporary(
 
     def fake_run(args, **kwargs):
         output = Path(args[args.index("--cond_output_folder") + 1])
-        _write_render_fixture(
-            output, config.render.num_views, config.render.resolution
-        )
+        _write_render_fixture(output, config.render.num_views, config.render.resolution)
         return subprocess.CompletedProcess(args, 0)
 
     def fail_exchange(temporary, destination):
@@ -415,9 +406,7 @@ def test_exchange_failure_keeps_existing_output_and_cleans_temporary(
         raise OSError("renameat2 unavailable")
 
     monkeypatch.setattr(render_cond.subprocess, "run", fake_run)
-    monkeypatch.setattr(
-        render_cond, "_rename_exchange", fail_exchange, raising=False
-    )
+    monkeypatch.setattr(render_cond, "_rename_exchange", fail_exchange, raising=False)
 
     with pytest.raises(OSError, match="renameat2 unavailable"):
         render_cond._render_cond(
@@ -453,6 +442,30 @@ def test_publish_falls_back_when_filesystem_does_not_support_exchange(
     assert (final / "value").read_text() == "new"
     assert not temporary.exists()
     assert not final.with_name(".asset.previous").exists()
+
+
+def test_publish_syncs_candidate_contents_and_parent_directory(monkeypatch, tmp_path):
+    final = tmp_path / "asset"
+    temporary = tmp_path / ".asset.new"
+    temporary.mkdir()
+    (temporary / "value").write_text("new")
+    calls = []
+
+    monkeypatch.setattr(
+        render_cond,
+        "_fsync_output_tree",
+        lambda path: calls.append(("tree", path)),
+    )
+    monkeypatch.setattr(
+        render_cond,
+        "_fsync_directory",
+        lambda path: calls.append(("directory", path)),
+    )
+
+    render_cond._publish_render_output(temporary, final)
+
+    assert calls == [("tree", temporary), ("directory", tmp_path)]
+    assert (final / "value").read_text() == "new"
 
 
 def test_publish_fallback_restores_previous_output_on_second_rename_failure(
@@ -570,9 +583,7 @@ def test_publish_double_failure_preserves_preexisting_last_known_good(
 
     assert not final.exists()
     assert (previous / "value").read_text() == "last-known-good"
-    assert (tmp_path / ".asset.current" / "value").read_text() == (
-        "invalid-current"
-    )
+    assert (tmp_path / ".asset.current" / "value").read_text() == ("invalid-current")
 
     monkeypatch.setattr(render_cond.os, "replace", real_replace)
     with render_cond._publication_lock(final):
@@ -648,16 +659,14 @@ def test_concurrent_publications_are_serialized(monkeypatch, tmp_path):
     assert not final.with_name(".asset.previous").exists()
 
 
-def test_render_main_passes_download_root_to_adapter(
-    monkeypatch, tmp_path
-):
+def test_render_main_passes_download_root_to_adapter(monkeypatch, tmp_path):
     source_root = tmp_path / "source"
     download_root = tmp_path / "download"
     render_root = tmp_path / "render"
     source_root.mkdir()
-    pd.DataFrame(
-        [{"sha256": "c" * 64, "local_path": "raw/fixture.glb"}]
-    ).to_csv(source_root / "metadata.csv", index=False)
+    pd.DataFrame([{"sha256": "c" * 64, "local_path": "raw/fixture.glb"}]).to_csv(
+        source_root / "metadata.csv", index=False
+    )
     calls = []
 
     def foreach_instance(metadata, output_dir, func, **kwargs):
@@ -700,15 +709,10 @@ def test_render_main_passes_download_root_to_adapter(
     assert func.keywords["blender_path"] == Path("/tools/blender")
     assert func.keywords["timeout_seconds"] == 41
     assert kwargs["max_workers"] == 8
-    assert (
-        render_root
-        / "renders_cond/new_records/chunk007_part_0.csv"
-    ).is_file()
+    assert (render_root / "renders_cond/new_records/chunk007_part_0.csv").is_file()
 
 
-def test_native_render_batches_worker_lifecycle_by_asset_count(
-    monkeypatch, tmp_path
-):
+def test_native_render_batches_worker_lifecycle_by_asset_count(monkeypatch, tmp_path):
     source_root = tmp_path / "source"
     source_root.mkdir()
     pd.DataFrame(
@@ -755,14 +759,12 @@ def test_native_render_batches_worker_lifecycle_by_asset_count(
     assert calls == [(9, {"max_assets": 7, "timeout_seconds": 900})]
 
 
-def test_native_render_rejects_multiple_workers_on_one_gpu(
-    monkeypatch, tmp_path
-):
+def test_native_render_rejects_multiple_workers_on_one_gpu(monkeypatch, tmp_path):
     source_root = tmp_path / "source"
     source_root.mkdir()
-    pd.DataFrame(
-        [{"sha256": "d" * 64, "local_path": "raw/fixture.glb"}]
-    ).to_csv(source_root / "metadata.csv", index=False)
+    pd.DataFrame([{"sha256": "d" * 64, "local_path": "raw/fixture.glb"}]).to_csv(
+        source_root / "metadata.csv", index=False
+    )
     adapter = SimpleNamespace(
         add_args=lambda parser: parser.add_argument("--source"),
         foreach_instance=lambda *args, **kwargs: pd.DataFrame(),
@@ -787,14 +789,12 @@ def test_native_render_rejects_multiple_workers_on_one_gpu(
         )
 
 
-def test_render_main_rejects_record_prefix_path_separators(
-    monkeypatch, tmp_path
-):
+def test_render_main_rejects_record_prefix_path_separators(monkeypatch, tmp_path):
     source_root = tmp_path / "source"
     source_root.mkdir()
-    pd.DataFrame(
-        [{"sha256": "e" * 64, "local_path": "raw/fixture.glb"}]
-    ).to_csv(source_root / "metadata.csv", index=False)
+    pd.DataFrame([{"sha256": "e" * 64, "local_path": "raw/fixture.glb"}]).to_csv(
+        source_root / "metadata.csv", index=False
+    )
     adapter = SimpleNamespace(
         add_args=lambda parser: None,
         foreach_instance=lambda *args, **kwargs: pd.DataFrame(),
@@ -815,15 +815,13 @@ def test_render_main_rejects_record_prefix_path_separators(
         )
 
 
-def test_render_main_defaults_to_eight_deterministic_views(
-    monkeypatch, tmp_path
-):
+def test_render_main_defaults_to_eight_deterministic_views(monkeypatch, tmp_path):
     source_root = tmp_path / "source"
     source_root.mkdir()
     sha = "d" * 64
-    pd.DataFrame(
-        [{"sha256": sha, "local_path": "raw/fixture.glb"}]
-    ).to_csv(source_root / "metadata.csv", index=False)
+    pd.DataFrame([{"sha256": sha, "local_path": "raw/fixture.glb"}]).to_csv(
+        source_root / "metadata.csv", index=False
+    )
     rendered_views = []
 
     def fake_render(file_path, asset_sha, **kwargs):
@@ -834,9 +832,7 @@ def test_render_main_defaults_to_eight_deterministic_views(
 
     def foreach_instance(metadata, output_dir, func, **kwargs):
         record = metadata.iloc[0]
-        return pd.DataFrame(
-            [func(record["local_path"], record["sha256"])]
-        )
+        return pd.DataFrame([func(record["local_path"], record["sha256"])])
 
     adapter = SimpleNamespace(
         add_args=lambda parser: None,
@@ -888,13 +884,13 @@ def test_resume_only_skips_valid_render_directories(monkeypatch, tmp_path):
     for sha in names.values():
         (renders / sha).mkdir()
     _write_render_fixture(renders / names["valid"], 8)
-    valid_previous = renders / f'.{names["valid"]}.previous'
+    valid_previous = renders / f".{names['valid']}.previous"
     valid_previous.mkdir()
     (valid_previous / "stale").write_text("old")
 
     _write_render_fixture(renders / names["partial"], 8)
     (renders / names["partial"] / "007.png").unlink()
-    partial_previous = renders / f'.{names["partial"]}.previous'
+    partial_previous = renders / f".{names['partial']}.previous"
     partial_previous.mkdir()
     (partial_previous / "stale").write_text("old")
 
@@ -903,9 +899,7 @@ def test_resume_only_skips_valid_render_directories(monkeypatch, tmp_path):
         Image.new("RGBA", (512, 512)).save(
             renders / names["metadata_free"] / f"{index:03d}.png"
         )
-    _write_render_fixture(
-        renders / names["wrong_resolution"], 8, resolution=256
-    )
+    _write_render_fixture(renders / names["wrong_resolution"], 8, resolution=256)
     _write_render_fixture(renders / names["device_free"], 8)
     device_metadata = renders / names["device_free"] / "transforms.json"
     device_value = json.loads(device_metadata.read_text())
@@ -947,9 +941,7 @@ def test_resume_only_skips_valid_render_directories(monkeypatch, tmp_path):
 
 def test_blender_script_selects_gpu_and_scales_boundary():
     repository = Path(__file__).resolve().parents[2]
-    source = (
-        repository / "data_toolkit/blender_script/render_cond.py"
-    ).read_text()
+    source = (repository / "data_toolkit/blender_script/render_cond.py").read_text()
 
     assert "preferences.compute_device_type = arg.cycles_device" in source
     assert "device.use = device.type == arg.cycles_device" in source
@@ -968,10 +960,13 @@ def test_blender_script_selects_gpu_and_scales_boundary():
 
 def test_blender_script_replays_original_budget_after_target_disagreement():
     assert target_requires_legacy_replay(True) is True
-    assert target_requires_legacy_replay(
-        False,
-        touches_boundary=True,
-    ) is True
+    assert (
+        target_requires_legacy_replay(
+            False,
+            touches_boundary=True,
+        )
+        is True
+    )
     assert target_requires_legacy_replay(False, too_far=True) is True
     assert target_requires_legacy_replay(False, False, False) is False
     assert legacy_replay_state(2.75, 10) == (2.75, 0, 10)
@@ -1033,13 +1028,11 @@ def test_native_worker_timeout_terminates_hung_process(tmp_path):
 
 def test_blender_render_script_uses_version_aware_obj_importer():
     repository = Path(__file__).resolve().parents[2]
-    source = (
-        repository / "data_toolkit/blender_script/render_cond.py"
-    ).read_text()
+    source = (repository / "data_toolkit/blender_script/render_cond.py").read_text()
 
     assert (
         '"obj": bpy.ops.import_scene.obj if bpy.app.version[0] < 4 '
-        'else bpy.ops.wm.obj_import'
+        "else bpy.ops.wm.obj_import"
     ) in source
 
 

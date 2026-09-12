@@ -1,10 +1,13 @@
 import json
+import math
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
 
 from data_toolkit.benchmark_quality import compare_benchmark_outputs
+
+FIXTURE_ARTIFACT_COUNTS = {".json": 1, ".npz": 1, ".png": 1, ".vxz": 0}
 
 
 def _write_fixture(root: Path, feature: float, rgb: int = 128) -> None:
@@ -44,7 +47,11 @@ def test_diagnostic_policy_accepts_bounded_latent_noise_and_reports_rgb(tmp_path
     _write_fixture(reference, 0.5, rgb=128)
     _write_fixture(candidate, 0.5005, rgb=64)
 
-    report = compare_benchmark_outputs(reference, candidate)
+    report = compare_benchmark_outputs(
+        reference,
+        candidate,
+        expected_artifact_counts=FIXTURE_ARTIFACT_COUNTS,
+    )
 
     assert report["passed"] is True
     assert report["min_rgb_psnr"] < 50
@@ -59,7 +66,11 @@ def test_seeded_rgb_policy_enforces_per_image_psnr(tmp_path):
     _write_fixture(candidate, 0.5, rgb=64)
 
     report = compare_benchmark_outputs(
-        reference, candidate, rgb_policy="required", min_rgb_psnr=50
+        reference,
+        candidate,
+        expected_artifact_counts=FIXTURE_ARTIFACT_COUNTS,
+        rgb_policy="required",
+        min_rgb_psnr=50,
     )
 
     assert report["passed"] is False
@@ -78,7 +89,11 @@ def test_coordinate_and_latent_thresholds_are_hard_failures(tmp_path):
         feats=np.array([[0.6, -0.25]], dtype=np.float32),
     )
 
-    report = compare_benchmark_outputs(reference, candidate)
+    report = compare_benchmark_outputs(
+        reference,
+        candidate,
+        expected_artifact_counts=FIXTURE_ARTIFACT_COUNTS,
+    )
 
     assert report["passed"] is False
     assert any("coords" in failure for failure in report["failures"])
@@ -89,7 +104,11 @@ def test_empty_or_missing_roots_fail_closed(tmp_path):
     empty = tmp_path / "empty"
     empty.mkdir()
 
-    report = compare_benchmark_outputs(empty, tmp_path / "missing")
+    report = compare_benchmark_outputs(
+        empty,
+        tmp_path / "missing",
+        expected_artifact_counts=FIXTURE_ARTIFACT_COUNTS,
+    )
 
     assert report["passed"] is False
     assert any("no comparable artifacts" in item for item in report["failures"])
@@ -104,12 +123,14 @@ def test_non_finite_reference_values_fail_closed(tmp_path):
     np.savez(reference / "latent.npz", feats=np.array([np.nan], dtype=np.float32))
     np.savez(candidate / "latent.npz", feats=np.array([0.0], dtype=np.float32))
 
-    report = compare_benchmark_outputs(reference, candidate)
+    report = compare_benchmark_outputs(
+        reference,
+        candidate,
+        expected_artifact_counts={".json": 0, ".npz": 1, ".png": 0, ".vxz": 0},
+    )
 
     assert report["passed"] is False
-    assert any(
-        "non-finite reference values" in item for item in report["failures"]
-    )
+    assert any("non-finite reference values" in item for item in report["failures"])
 
 
 def test_non_finite_json_values_fail_closed(tmp_path):
@@ -120,7 +141,67 @@ def test_non_finite_json_values_fail_closed(tmp_path):
     (reference / "transforms.json").write_text('{"radius": Infinity}')
     (candidate / "transforms.json").write_text('{"radius": Infinity}')
 
-    report = compare_benchmark_outputs(reference, candidate)
+    report = compare_benchmark_outputs(
+        reference,
+        candidate,
+        expected_artifact_counts={".json": 1, ".npz": 0, ".png": 0, ".vxz": 0},
+    )
 
     assert report["passed"] is False
     assert report["failures"] == ["transforms.json: JSON values differ"]
+
+
+def test_expected_artifact_counts_are_required(tmp_path):
+    reference = tmp_path / "reference"
+    candidate = tmp_path / "candidate"
+    reference.mkdir()
+    candidate.mkdir()
+    (reference / "transforms.json").write_text("{}")
+    (candidate / "transforms.json").write_text("{}")
+
+    report = compare_benchmark_outputs(reference, candidate)
+
+    assert report["passed"] is False
+    assert report["failures"] == ["trusted expected artifact counts are required"]
+
+
+def test_incomplete_matching_artifact_sets_fail_closed(tmp_path):
+    reference = tmp_path / "reference"
+    candidate = tmp_path / "candidate"
+    reference.mkdir()
+    candidate.mkdir()
+    (reference / "transforms.json").write_text("{}")
+    (candidate / "transforms.json").write_text("{}")
+
+    report = compare_benchmark_outputs(
+        reference,
+        candidate,
+        expected_artifact_counts={".json": 100, ".npz": 0, ".png": 800, ".vxz": 0},
+    )
+
+    assert report["passed"] is False
+    assert any(
+        "expected 100 .json artifacts, found 1" in item for item in report["failures"]
+    )
+    assert any(
+        "expected 800 .png artifacts, found 0" in item for item in report["failures"]
+    )
+
+
+def test_non_finite_quality_thresholds_fail_closed(tmp_path):
+    reference = tmp_path / "reference"
+    candidate = tmp_path / "candidate"
+    _write_fixture(reference, 0.5)
+    _write_fixture(candidate, 0.5)
+
+    report = compare_benchmark_outputs(
+        reference,
+        candidate,
+        expected_artifact_counts=FIXTURE_ARTIFACT_COUNTS,
+        min_rgb_psnr=math.nan,
+        max_latent_relative_l2=math.inf,
+    )
+
+    assert report["passed"] is False
+    assert any("RGB PSNR threshold" in item for item in report["failures"])
+    assert any("latent relative L2 threshold" in item for item in report["failures"])

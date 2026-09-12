@@ -71,18 +71,13 @@ def _import_adapter(adapter_name: str):
     package_name = f"data_toolkit.datasets.{adapter_name}"
     legacy_name = f"datasets.{adapter_name}"
     candidates = (
-        (package_name, legacy_name)
-        if __package__
-        else (legacy_name, package_name)
+        (package_name, legacy_name) if __package__ else (legacy_name, package_name)
     )
     try:
         return importlib.import_module(candidates[0])
     except ModuleNotFoundError as error:
         missing = error.name or ""
-        if not (
-            candidates[0] == missing
-            or candidates[0].startswith(f"{missing}.")
-        ):
+        if not (candidates[0] == missing or candidates[0].startswith(f"{missing}.")):
             raise
     return importlib.import_module(candidates[1])
 
@@ -98,9 +93,7 @@ def _load_native_renderer():
     if version != NATIVE_BPY_VERSION:
         expected = ".".join(str(value) for value in NATIVE_BPY_VERSION)
         actual = ".".join(str(value) for value in version)
-        raise RuntimeError(
-            f"native renderer requires bpy {expected}, found {actual}"
-        )
+        raise RuntimeError(f"native renderer requires bpy {expected}, found {actual}")
     return renderer
 
 
@@ -173,7 +166,7 @@ def _run_bounded_native_tasks(
     context = multiprocessing.get_context("fork")
     records = []
     for start in range(0, len(tasks), max_assets):
-        batch = tasks[start:start + max_assets]
+        batch = tasks[start : start + max_assets]
         results = context.Queue()
         process = context.Process(
             target=_native_task_worker,
@@ -187,14 +180,12 @@ def _run_bounded_native_tasks(
                 except queue.Empty as error:
                     _terminate_native_worker(process)
                     raise TimeoutError(
-                        "native renderer timed out after "
-                        f"{timeout_seconds} seconds"
+                        f"native renderer timed out after {timeout_seconds} seconds"
                     ) from error
                 if message[0] == "error":
                     _terminate_native_worker(process)
                     raise RuntimeError(
-                        f"native renderer worker failed with {message[2]}: "
-                        f"{message[3]}"
+                        f"native renderer worker failed with {message[2]}: {message[3]}"
                     )
                 _, index, record = message
                 if index != expected_index:
@@ -235,9 +226,7 @@ def _finite_number(value) -> bool:
     )
 
 
-def _validate_render_output(
-    path: Path, expected_views: int, resolution: int
-) -> None:
+def _validate_render_output(path: Path, expected_views: int, resolution: int) -> None:
     transforms_path = path / "transforms.json"
     if not transforms_path.is_file():
         raise ValueError(f"missing render metadata: {transforms_path}")
@@ -253,9 +242,7 @@ def _validate_render_output(
         not isinstance(selected_devices, list)
         or not selected_devices
         or any(
-            not isinstance(name, str)
-            or not name.strip()
-            or "CPU" in name.upper()
+            not isinstance(name, str) or not name.strip() or "CPU" in name.upper()
             for name in selected_devices
         )
     ):
@@ -341,8 +328,10 @@ def _recover_render_output(final: Path) -> None:
     if previous.exists():
         os.replace(previous, final)
         _remove_output_path(current)
+        _fsync_directory(final.parent)
     elif current.exists():
         os.replace(current, final)
+        _fsync_directory(final.parent)
 
 
 def _validate_existing_render_output(
@@ -360,6 +349,7 @@ def _validate_existing_render_output(
         _validate_render_output(previous, num_views, resolution)
         _remove_output_path(final)
         os.replace(previous, final)
+        _fsync_directory(final.parent)
     _cleanup_legacy_previous(final)
     _cleanup_interrupted_current(final)
 
@@ -384,9 +374,35 @@ def _rename_exchange(left: Path, right: Path) -> None:
         )
 
 
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _fsync_output_tree(root: Path) -> None:
+    directories = [root]
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            raise ValueError(f"render output contains a symlink: {path}")
+        if path.is_dir():
+            directories.append(path)
+            continue
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    for directory in reversed(directories):
+        _fsync_directory(directory)
+
+
 def _publish_render_output_unlocked(temporary: Path, final: Path) -> None:
     if not final.exists():
         os.replace(temporary, final)
+        _fsync_directory(final.parent)
         return
 
     try:
@@ -403,18 +419,19 @@ def _publish_render_output_unlocked(temporary: Path, final: Path) -> None:
         previous = final.with_name(f".{final.name}.previous")
         preserve_previous = previous.exists()
         backup = (
-            final.with_name(f".{final.name}.current")
-            if preserve_previous
-            else previous
+            final.with_name(f".{final.name}.current") if preserve_previous else previous
         )
         _remove_output_path(backup)
         os.replace(final, backup)
+        _fsync_directory(final.parent)
         try:
             os.replace(temporary, final)
+            _fsync_directory(final.parent)
         # Roll back even when worker cancellation interrupts publication.
         except BaseException:
             try:
                 os.replace(backup, final)
+                _fsync_directory(final.parent)
             except OSError as rollback_error:
                 recovery = previous if previous.exists() else backup
                 raise RuntimeError(
@@ -423,16 +440,21 @@ def _publish_render_output_unlocked(temporary: Path, final: Path) -> None:
                 ) from rollback_error
             raise
         _remove_output_path(backup)
+        _fsync_directory(final.parent)
         if preserve_previous:
             _remove_output_path(previous)
+            _fsync_directory(final.parent)
     else:
+        _fsync_directory(final.parent)
         _remove_output_path(temporary)
         _cleanup_legacy_previous(final)
         _cleanup_interrupted_current(final)
+        _fsync_directory(final.parent)
 
 
 def _publish_render_output(temporary: Path, final: Path) -> None:
     with _publication_lock(final):
+        _fsync_output_tree(temporary)
         _recover_render_output(final)
         _publish_render_output_unlocked(temporary, final)
 
@@ -454,9 +476,7 @@ def _render_cond(
     cond_views = build_condition_views(sha256, config)
     final = Path(root) / "renders_cond" / sha256
     final.parent.mkdir(parents=True, exist_ok=True)
-    temporary = Path(
-        tempfile.mkdtemp(prefix=f".{sha256}.", dir=final.parent)
-    )
+    temporary = Path(tempfile.mkdtemp(prefix=f".{sha256}.", dir=final.parent))
     args = [
         str(blender_path),
         "-b",
@@ -509,9 +529,7 @@ def _render_cond(
             )
         else:
             raise ValueError(f"unknown renderer mode: {renderer_mode}")
-        _validate_render_output(
-            temporary, config.num_views, config.resolution
-        )
+        _validate_render_output(temporary, config.num_views, config.resolution)
         _publish_render_output(temporary, final)
     finally:
         if temporary.exists():
@@ -611,9 +629,7 @@ def main(argv: list[str] | None = None) -> None:
         exist_ok=True,
     )
     blender_path = (
-        Path(opt.blender_path).expanduser()
-        if opt.blender_path
-        else _install_blender()
+        Path(opt.blender_path).expanduser() if opt.blender_path else _install_blender()
     )
     render_config = RenderConfig(
         num_views=opt.num_cond_views,
@@ -631,30 +647,20 @@ def main(argv: list[str] | None = None) -> None:
     metadata = pd.read_csv(
         os.path.join(opt.root, "metadata.csv"), dtype={"sha256": str}
     ).set_index("sha256")
-    aesthetic_path = os.path.join(
-        opt.root, "aesthetic_scores", "metadata.csv"
-    )
+    aesthetic_path = os.path.join(opt.root, "aesthetic_scores", "metadata.csv")
     if os.path.exists(aesthetic_path):
         metadata = metadata.combine_first(
-            pd.read_csv(aesthetic_path, dtype={"sha256": str}).set_index(
-                "sha256"
-            )
+            pd.read_csv(aesthetic_path, dtype={"sha256": str}).set_index("sha256")
         )
     downloaded_path = os.path.join(opt.download_root, "raw", "metadata.csv")
     if os.path.exists(downloaded_path):
         metadata = metadata.combine_first(
-            pd.read_csv(downloaded_path, dtype={"sha256": str}).set_index(
-                "sha256"
-            )
+            pd.read_csv(downloaded_path, dtype={"sha256": str}).set_index("sha256")
         )
-    rendered_path = os.path.join(
-        opt.render_cond_root, "renders_cond", "metadata.csv"
-    )
+    rendered_path = os.path.join(opt.render_cond_root, "renders_cond", "metadata.csv")
     if os.path.exists(rendered_path):
         metadata = metadata.combine_first(
-            pd.read_csv(rendered_path, dtype={"sha256": str}).set_index(
-                "sha256"
-            )
+            pd.read_csv(rendered_path, dtype={"sha256": str}).set_index("sha256")
         )
     metadata = metadata.reset_index()
     if opt.instances is None:
@@ -677,14 +683,14 @@ def main(argv: list[str] | None = None) -> None:
     records = []
 
     # filter out objects that are already processed
-    with ThreadPoolExecutor(max_workers=os.cpu_count()) as executor, tqdm(
-        total=len(metadata), desc="Filtering existing objects"
-    ) as pbar:
+    with (
+        ThreadPoolExecutor(max_workers=os.cpu_count()) as executor,
+        tqdm(total=len(metadata), desc="Filtering existing objects") as pbar,
+    ):
+
         def check_sha256(sha256):
             sha256 = _validated_asset_sha(sha256)
-            final = (
-                Path(opt.render_cond_root) / "renders_cond" / sha256
-            )
+            final = Path(opt.render_cond_root) / "renders_cond" / sha256
             try:
                 with _publication_lock(final):
                     _validate_existing_render_output(
@@ -698,11 +704,12 @@ def main(argv: list[str] | None = None) -> None:
                 records.append({"sha256": sha256, "cond_rendered": True})
             finally:
                 pbar.update()
+
         list(executor.map(check_sha256, metadata["sha256"].values))
     existing_sha256 = set(r["sha256"] for r in records)
     metadata = metadata[~metadata["sha256"].isin(existing_sha256)]
 
-    print(f'Processing {len(metadata)} objects...')
+    print(f"Processing {len(metadata)} objects...")
 
     # process objects
     func = partial(
@@ -744,9 +751,7 @@ def main(argv: list[str] | None = None) -> None:
             max_workers=opt.max_workers,
             desc="Rendering objects",
         )
-    cond_rendered = pd.concat(
-        [cond_rendered, pd.DataFrame.from_records(records)]
-    )
+    cond_rendered = pd.concat([cond_rendered, pd.DataFrame.from_records(records)])
     cond_rendered.to_csv(
         os.path.join(
             opt.render_cond_root,

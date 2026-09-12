@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TypeAlias
 
@@ -21,6 +22,7 @@ CAMERA_ATOL = 1e-6
 ARTIFACT_SUFFIXES = {".json", ".npz", ".png", ".vxz"}
 EXACT_ARRAY_KEYS = {"coords", "coord", "voxel_indices", "intersected"}
 Array: TypeAlias = NDArray[np.generic]
+ArtifactCounts: TypeAlias = Mapping[str, int]
 
 
 def image_psnr(reference: Array, candidate: Array) -> float:
@@ -141,11 +143,23 @@ def compare_benchmark_outputs(
     reference_root: Path,
     candidate_root: Path,
     *,
+    expected_artifact_counts: ArtifactCounts | None = None,
     rgb_policy: str = "diagnostic",
     min_rgb_psnr: float = DEFAULT_MIN_SEEDED_RGB_PSNR,
     max_latent_relative_l2: float = DEFAULT_MAX_LATENT_RELATIVE_L2,
 ) -> dict[str, object]:
     failures: list[str] = []
+    if rgb_policy not in {"diagnostic", "required"}:
+        failures.append(f"invalid RGB policy: {rgb_policy}")
+    if not math.isfinite(min_rgb_psnr) or min_rgb_psnr < 0:
+        failures.append("RGB PSNR threshold must be finite and non-negative")
+    if (
+        not math.isfinite(max_latent_relative_l2)
+        or max_latent_relative_l2 < 0
+    ):
+        failures.append(
+            "latent relative L2 threshold must be finite and non-negative"
+        )
     if not reference_root.is_dir():
         failures.append(f"reference root is not a directory: {reference_root}")
     if not candidate_root.is_dir():
@@ -156,6 +170,28 @@ def compare_benchmark_outputs(
         failures.append("reference contains no comparable artifacts")
     if not candidate_paths:
         failures.append("candidate contains no comparable artifacts")
+    actual_counts = {
+        suffix: sum(path.suffix == suffix for path in reference_paths)
+        for suffix in sorted(ARTIFACT_SUFFIXES)
+    }
+    if expected_artifact_counts is None:
+        failures.append("trusted expected artifact counts are required")
+    elif set(expected_artifact_counts) != ARTIFACT_SUFFIXES or any(
+        isinstance(count, bool) or not isinstance(count, int) or count < 0
+        for count in expected_artifact_counts.values()
+    ):
+        failures.append(
+            "expected artifact counts must provide non-negative integers for "
+            ".json, .npz, .png, and .vxz"
+        )
+    else:
+        for suffix, expected_count in sorted(expected_artifact_counts.items()):
+            actual_count = actual_counts[suffix]
+            if actual_count != expected_count:
+                failures.append(
+                    f"expected {expected_count} {suffix} artifacts, "
+                    f"found {actual_count}"
+                )
     if reference_paths != candidate_paths:
         missing = sorted(str(path) for path in reference_paths - candidate_paths)
         extra = sorted(str(path) for path in candidate_paths - reference_paths)
@@ -225,6 +261,12 @@ def compare_benchmark_outputs(
         "compared_png": len(psnrs),
         "compared_npz": compared_npz,
         "compared_vxz": compared_vxz,
+        "expected_artifact_counts": (
+            dict(expected_artifact_counts)
+            if expected_artifact_counts is not None
+            else None
+        ),
+        "reference_artifact_counts": actual_counts,
     }
 
 
@@ -237,10 +279,20 @@ def main() -> int:
     )
     parser.add_argument("--min-rgb-psnr", type=float, default=50.0)
     parser.add_argument("--max-latent-relative-l2", type=float, default=0.002)
+    parser.add_argument("--expected-json", type=int, required=True)
+    parser.add_argument("--expected-npz", type=int, required=True)
+    parser.add_argument("--expected-png", type=int, required=True)
+    parser.add_argument("--expected-vxz", type=int, required=True)
     args = parser.parse_args()
     report = compare_benchmark_outputs(
         args.reference,
         args.candidate,
+        expected_artifact_counts={
+            ".json": args.expected_json,
+            ".npz": args.expected_npz,
+            ".png": args.expected_png,
+            ".vxz": args.expected_vxz,
+        },
         rgb_policy=args.rgb_policy,
         min_rgb_psnr=args.min_rgb_psnr,
         max_latent_relative_l2=args.max_latent_relative_l2,
