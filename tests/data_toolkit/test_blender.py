@@ -776,16 +776,17 @@ def test_blender_script_selects_gpu_and_scales_boundary():
     assert 'parser.add_argument("--boundary_fit_resolution"' in source
 
 
-def test_blender_script_restores_original_retry_budget_after_fit_exhaustion():
+def test_blender_script_replays_original_budget_after_target_disagreement():
     repository = Path(__file__).resolve().parents[2]
     source = (
         repository / "data_toolkit/blender_script/render_cond.py"
     ).read_text()
 
     assert "fit_exhausted = retry_count >= max_retry" in source
+    assert "replay_legacy = touches_boundary or too_far" in source
+    assert "if replay_legacy:" in source
     assert "final_retry_count = 0" in source
-    assert "fallback_retry_limit = max_retry - final_retry_count" in source
-    assert "while fallback_retries < fallback_retry_limit:" in source
+    assert "while fallback_retries < max_retry:" in source
 
 
 def test_native_renderer_dependency_matches_production_blender_version():

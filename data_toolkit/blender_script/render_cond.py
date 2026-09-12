@@ -545,15 +545,8 @@ def main(arg):
             bpy.context.scene.cycles.use_denoising = final_cycles_denoising
             bpy.context.scene.render.resolution_x = arg.cond_resolution
             bpy.context.scene.render.resolution_y = arg.cond_resolution
-            if fit_exhausted:
-                # The approximate fit did not converge. Discard it and replay
-                # the original full-resolution algorithm with its original
-                # ten-adjustment budget so legacy camera/output semantics win.
-                current_radius = view['radius']
-                final_retry_count = 0
-            fallback_retry_limit = max_retry - final_retry_count
-            fallback_retries = 0
-            while fallback_retries < fallback_retry_limit:
+            replay_legacy = fit_exhausted
+            if not replay_legacy:
                 cam.location = (
                     current_radius * cam_dir[0],
                     current_radius * cam_dir[1],
@@ -566,16 +559,37 @@ def main(arg):
                     output_path,
                     min_boundary_distance=final_boundary_distance,
                 )
-                if not touches_boundary and not too_far:
-                    break
-                fallback_retries += 1
-                final_retry_count += 1
-                current_radius *= (
-                    radius_increase_factor if touches_boundary
-                    else radius_decrease_factor
-                )
-            if fallback_retries >= fallback_retry_limit:
-                print(f'[WARNING] View {i}: Final-resolution fallback exhausted (dist={min_dist}px)')
+                replay_legacy = touches_boundary or too_far
+            if replay_legacy:
+                # Any disagreement at target resolution discards the
+                # approximate fit. Replay the original full-resolution
+                # algorithm from its original radius and retry budget.
+                current_radius = view['radius']
+                final_retry_count = 0
+                fallback_retries = 0
+                while fallback_retries < max_retry:
+                    cam.location = (
+                        current_radius * cam_dir[0],
+                        current_radius * cam_dir[1],
+                        current_radius * cam_dir[2]
+                    )
+                    bpy.context.scene.render.filepath = output_path
+                    bpy.ops.render.render(write_still=True)
+                    bpy.context.view_layer.update()
+                    touches_boundary, too_far, min_dist = check_mask_boundary_distance(
+                        output_path,
+                        min_boundary_distance=final_boundary_distance,
+                    )
+                    if not touches_boundary and not too_far:
+                        break
+                    fallback_retries += 1
+                    final_retry_count += 1
+                    current_radius *= (
+                        radius_increase_factor if touches_boundary
+                        else radius_decrease_factor
+                    )
+                if fallback_retries >= max_retry:
+                    print(f'[WARNING] View {i}: Final-resolution fallback exhausted (dist={min_dist}px)')
             
         # Save camera parameters (with potentially updated radius)
         metadata = {
