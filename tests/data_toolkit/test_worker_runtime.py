@@ -198,3 +198,46 @@ def test_worker_environment_fails_before_claim_when_native_module_is_missing(
             registration,
             importer=importer,
         )
+
+
+def test_worker_environment_validates_native_bpy_before_claim(
+    tmp_path, monkeypatch
+):
+    canonical = load_config(CONFIG)
+    registration = WorkerRegistration(
+        node_id="node16",
+        ssh_target="node16",
+        cpu_limit=40,
+        gpu_indices=(0,),
+        data2_root=tmp_path / "data2",
+        data3_root=tmp_path / "data3",
+        local_root=tmp_path / "local",
+    )
+    configured = execution_config(canonical, registration)
+    blender = registration.local_root / "tools/blender-4.5.1-linux-x64/blender"
+    blender.parent.mkdir(parents=True)
+    blender.write_text("fixture")
+    blender.chmod(0o700)
+    torch = SimpleNamespace(
+        __version__="2.8.0+cu128",
+        version=SimpleNamespace(cuda="12.8"),
+        cuda=SimpleNamespace(is_available=lambda: True, device_count=lambda: 1),
+    )
+    monkeypatch.setenv("PIXAL3D_RENDERER_MODE", "native")
+
+    def importer(name):
+        if name == "torch":
+            return torch
+        if name == "bpy":
+            return SimpleNamespace(app=SimpleNamespace(version=(4, 4, 0)))
+        return object()
+
+    with pytest.raises(WorkerRuntimeError, match="bpy 4.5.1"):
+        validate_worker_environment(
+            configured,
+            registration,
+            importer=importer,
+            process_runner=lambda *_args, **_kwargs: SimpleNamespace(
+                stdout="Blender 4.5.1\n"
+            ),
+        )

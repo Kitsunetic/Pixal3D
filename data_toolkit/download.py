@@ -67,10 +67,25 @@ def _atomic_write_csv(frame: pd.DataFrame, path: Path) -> None:
             temporary_path.unlink(missing_ok=True)
 
 
+def _record_prefix(value: str) -> str:
+    if any(separator in value for separator in ("/", "\\", "\0")):
+        raise argparse.ArgumentTypeError(
+            "record prefix must not contain path separators"
+        )
+    return value
+
+
 def _publish_download_records(
-    download_root: Path, rank: int, downloaded: pd.DataFrame
+    download_root: Path,
+    rank: int,
+    downloaded: pd.DataFrame,
+    record_prefix: str = "",
 ) -> None:
-    part = download_root / "raw/new_records" / f"part_{rank}.csv"
+    part = (
+        download_root
+        / "raw/new_records"
+        / f"part_{record_prefix}{rank}.csv"
+    )
     _atomic_write_csv(downloaded, part)
 
 
@@ -140,6 +155,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--max_workers", type=int, default=8)
     parser.add_argument("--rank", type=int, default=0)
     parser.add_argument("--world_size", type=int, default=1)
+    parser.add_argument("--record_prefix", type=_record_prefix, default="")
     opt = edict(vars(parser.parse_args(argv[1:])))
     if canonical_source is not None:
         opt.source = canonical_source
@@ -190,7 +206,9 @@ def main(argv: list[str] | None = None) -> None:
         metadata, output_dir=opt.download_root, **opt
     )
     download_root = Path(opt.download_root)
-    _publish_download_records(download_root, opt.rank, downloaded)
+    _publish_download_records(
+        download_root, opt.rank, downloaded, opt.record_prefix
+    )
     _merge_download_records(download_root)
 
 

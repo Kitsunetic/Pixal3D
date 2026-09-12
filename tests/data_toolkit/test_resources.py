@@ -1,5 +1,7 @@
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+import json
+import multiprocessing
 from pathlib import Path
 import subprocess
 import sys
@@ -10,7 +12,11 @@ from types import SimpleNamespace
 import pytest
 
 from data_toolkit.pipeline import resources
-from data_toolkit.pipeline.runtime import NoFollowTelemetryWriter
+from data_toolkit.pipeline.config import load_config
+from data_toolkit.pipeline.runtime import (
+    NoFollowTelemetryWriter,
+    initialize_project_accounting,
+)
 from data_toolkit.pipeline.resources import (
     GpuMetric,
     ProjectStorageAccounting,
@@ -23,6 +29,20 @@ from data_toolkit.pipeline.resources import (
     ResourceSnapshot,
     TelemetryWriter,
 )
+
+
+def _record_accounting_delta_after_release(
+    config_path, target, delta, ready, release
+):
+    config = load_config(Path(config_path))
+    accounting = initialize_project_accounting(
+        config,
+        directory_size=lambda _root: 0,
+    )
+    ready.put(True)
+    if not release.wait(timeout=10):
+        raise RuntimeError("accounting test release timed out")
+    accounting.record_registry_delta(Path(target), delta)
 
 
 def test_resource_guard_serializes_parallel_chunk_sampling(config):
@@ -458,6 +478,96 @@ def test_project_accounting_accepts_registry_deltas_without_walking(tmp_path):
         accounting.record_registry_delta(tmp_path / "other" / "file", 1)
     with pytest.raises(ValueError, match="negative project accounting"):
         accounting.record_registry_delta(data2 / "prepared" / "pack.tar", -126)
+
+
+def test_project_accounting_reuses_persisted_totals_without_walking(tmp_config):
+    config = load_config(tmp_config)
+    config.paths.data2_root.mkdir(parents=True)
+    config.paths.data3_root.mkdir(parents=True)
+    path = config.paths.data2_root / "control/accounting.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        '{"artifact_type":"project_accounting",'
+        f'"config_hash":"{config.config_hash()}",'
+        '"data2_bytes":123,"data3_bytes":456,"schema_version":1}'
+    )
+
+    accounting = initialize_project_accounting(
+        config,
+        directory_size=lambda root: pytest.fail(f"unexpected walk: {root}"),
+    )
+
+    assert accounting.current_bytes() == (123, 456)
+
+
+def test_persistent_project_accounting_merges_concurrent_process_deltas(
+    tmp_config,
+):
+    config = load_config(tmp_config)
+    config.paths.data2_root.mkdir(parents=True)
+    config.paths.data3_root.mkdir(parents=True)
+    accounting = initialize_project_accounting(
+        config,
+        directory_size=lambda _root: 0,
+    )
+    assert accounting.current_bytes() == (0, 0)
+    context = multiprocessing.get_context("fork")
+    ready = context.Queue()
+    release = context.Event()
+    processes = [
+        context.Process(
+            target=_record_accounting_delta_after_release,
+            args=(
+                tmp_config,
+                config.paths.data2_root / f"pack-{index}.tar",
+                delta,
+                ready,
+                release,
+            ),
+        )
+        for index, delta in enumerate((11, 17))
+    ]
+    for process in processes:
+        process.start()
+    for _ in processes:
+        assert ready.get(timeout=10) is True
+    release.set()
+    for process in processes:
+        process.join(timeout=10)
+        assert process.exitcode == 0
+
+    persisted = json.loads(
+        (config.paths.data2_root / "control/accounting.json").read_text()
+    )
+    assert persisted["data2_bytes"] == 28
+    assert persisted["data3_bytes"] == 0
+
+
+def test_project_accounting_scans_once_when_persisted_totals_are_missing(
+    tmp_config,
+):
+    config = load_config(tmp_config)
+    config.paths.data2_root.mkdir(parents=True)
+    config.paths.data3_root.mkdir(parents=True)
+    sizes = {
+        config.paths.data2_root.resolve(): 123,
+        config.paths.data3_root.resolve(): 456,
+    }
+    walked = []
+
+    def directory_size(root):
+        walked.append(root)
+        return sizes[root]
+
+    accounting = initialize_project_accounting(
+        config, directory_size=directory_size
+    )
+
+    assert accounting.current_bytes() == (123, 456)
+    assert walked == [
+        config.paths.data2_root.resolve(),
+        config.paths.data3_root.resolve(),
+    ]
 
 
 @pytest.mark.parametrize(

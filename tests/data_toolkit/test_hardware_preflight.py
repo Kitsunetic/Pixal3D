@@ -220,18 +220,39 @@ def test_hardware_report_requires_cuda_12_8_and_torch_2_8_or_newer(
     assert report["decision"] == "failed"
 
 
+@pytest.mark.parametrize(
+    ("visible_gpu_indices", "selected_gpu_indices"),
+    (
+        (tuple(range(7)), tuple(range(7))),
+        (tuple(range(8)), (4, 5, 6, 7)),
+    ),
+)
 def test_collector_runs_gpu_and_storage_checks_sequentially(
-    config, monkeypatch, tmp_path
+    config,
+    monkeypatch,
+    tmp_path,
+    visible_gpu_indices,
+    selected_gpu_indices,
 ):
     from dataclasses import replace
 
+    gpu_count = len(selected_gpu_indices)
     roots = replace(
         config.paths,
         local_root=tmp_path / "local",
         data2_root=tmp_path / "data2",
         data3_root=tmp_path / "data3",
     )
-    config = replace(config, paths=roots)
+    config = replace(
+        config,
+        paths=roots,
+        parallelism=replace(config.parallelism, gpu_count=gpu_count),
+        workers=replace(config.workers, encoder_ranks=gpu_count),
+    )
+    monkeypatch.setenv(
+        "PIXAL3D_GPU_INDICES",
+        ",".join(str(index) for index in selected_gpu_indices),
+    )
     events = []
 
     def fake_installer(root):
@@ -239,7 +260,7 @@ def test_collector_runs_gpu_and_storage_checks_sequentially(
         return root / "blender-4.5.1-linux-x64/blender"
 
     def fake_inventory():
-        return [(index, f"GPU {index}") for index in range(7)]
+        return [(index, f"GPU {index}") for index in visible_gpu_indices]
 
     def fake_software(blender_path):
         return {
@@ -288,13 +309,16 @@ def test_collector_runs_gpu_and_storage_checks_sequentially(
 
     assert events == [
         ("install", roots.local_root / "tools"),
-        *[("gpu", index) for index in range(7)],
+        *[("gpu", index) for index in selected_gpu_indices],
         ("storage", "local"),
         ("storage", "data2"),
         ("storage", "data3"),
     ]
     evidence = json.loads(evidence_path.read_text())
-    assert derive_hardware_report(evidence, config, "d" * 64)["decision"] == "passed"
+    report = derive_hardware_report(evidence, config, "d" * 64)
+    assert report["decision"] == "passed"
+    assert report["gpu"]["gpu_count"] == gpu_count
+    assert report["thresholds"]["required_gpus"] == gpu_count
     provenance = json.loads(
         evidence_path.with_name("hardware_sizing_provenance.json").read_text()
     )

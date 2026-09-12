@@ -73,6 +73,15 @@ def validate_worker_environment(
     process_runner: Callable = subprocess.run,
 ) -> None:
     """Fail before claiming work when a node cannot execute every stage."""
+    renderer_mode = os.environ.get("PIXAL3D_RENDERER_MODE", "external")
+    if renderer_mode not in {"external", "native"}:
+        raise WorkerRuntimeError(
+            "PIXAL3D_RENDERER_MODE must be external or native"
+        )
+    native_required = renderer_mode == "native" and any(
+        source in {"ObjaverseXL_sketchfab", "ObjaverseXL_github"}
+        for source in config.sources
+    )
     modules = (
         "torch",
         "cv2",
@@ -86,7 +95,7 @@ def validate_worker_environment(
         "data_toolkit.datasets.HSSD",
         "data_toolkit.datasets.3D-FUTURE",
         "data_toolkit.datasets.ObjaverseXL",
-    )
+    ) + (("bpy",) if native_required else ())
     loaded = {}
     for name in modules:
         try:
@@ -119,6 +128,14 @@ def validate_worker_environment(
         raise WorkerRuntimeError(
             "registered GPU indices are unavailable to the production worker"
         )
+    if native_required:
+        bpy_app = getattr(loaded["bpy"], "app", None)
+        bpy_version = tuple(getattr(bpy_app, "version", ()))
+        if bpy_version[:3] != (4, 5, 1):
+            raise WorkerRuntimeError(
+                "native renderer requires bpy 4.5.1, found "
+                f"{bpy_version!r}"
+            )
 
     blender_path = (
         config.paths.local_root

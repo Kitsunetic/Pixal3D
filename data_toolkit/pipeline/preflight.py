@@ -21,10 +21,12 @@ class PreflightResult:
 
 
 def _manual(source: str, path: Path) -> PreflightResult:
-    status = (
-        PreflightStatus.READY if path.is_file() else PreflightStatus.BLOCKED
-    )
-    message = str(path) if path.is_file() else f"Missing manual archive: {path}"
+    try:
+        available = path.is_file()
+    except OSError:
+        available = False
+    status = PreflightStatus.READY if available else PreflightStatus.BLOCKED
+    message = str(path) if available else f"Missing manual archive: {path}"
     return PreflightResult(source, status, message)
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
 import fcntl
@@ -840,10 +841,17 @@ def derive_hardware_report(
         raise ArtifactValidationError("invalid hardware OptiX flag")
 
     gpu_values = value["gpus"]
-    if not isinstance(gpu_values, list) or len(gpu_values) != 7:
-        raise ArtifactValidationError("hardware requires exactly seven GPUs")
+    expected_gpu_count = config.parallelism.gpu_count
+    if (
+        not isinstance(gpu_values, list)
+        or len(gpu_values) != expected_gpu_count
+    ):
+        raise ArtifactValidationError(
+            "hardware GPU count does not match the configuration"
+        )
     gpus = []
-    for position, item in enumerate(gpu_values):
+    gpu_indices = set()
+    for item in gpu_values:
         if not isinstance(item, Mapping) or set(item) != {
             "index",
             "name",
@@ -853,9 +861,15 @@ def derive_hardware_report(
             "cube_render_sha256",
         }:
             raise ArtifactValidationError("invalid hardware GPU evidence")
-        if item["index"] != position or isinstance(item["index"], bool):
-            raise ArtifactValidationError("hardware GPU inventory is not contiguous")
-        if item["cuda_visible_device"] != str(position):
+        index = item["index"]
+        if (
+            type(index) is not int
+            or index < 0
+            or index in gpu_indices
+        ):
+            raise ArtifactValidationError("hardware GPU inventory is invalid")
+        gpu_indices.add(index)
+        if item["cuda_visible_device"] != str(index):
             raise ArtifactValidationError("hardware GPU visibility is not isolated")
         if not isinstance(item["name"], str) or not item["name"]:
             raise ArtifactValidationError("hardware GPU names must not be empty")
@@ -955,13 +969,13 @@ def derive_hardware_report(
         "evidence_sha256": evidence_digest,
         "decision": "passed" if passed else "failed",
         "software": dict(software),
-        "gpu": {"gpu_count": 7, "devices": gpus},
+        "gpu": {"gpu_count": expected_gpu_count, "devices": gpus},
         "storage": storage,
         "pilot_sizing": {"sources": sizing},
         "thresholds": {
             "fixture_bytes": fixture_bytes,
             "free_floor_bytes": floors,
-            "required_gpus": 7,
+            "required_gpus": expected_gpu_count,
             "cycles_device": config.render.cycles_device,
         },
     }
@@ -1499,9 +1513,32 @@ class PersistentProjectAccounting:
         self.config = config
         self.accounting = accounting
         self.path = Path(path)
+        self.lock_path = self.path.with_name(f"{self.path.name}.lock")
 
-    def _persist(self) -> None:
-        data2_bytes, data3_bytes = self.accounting.current_bytes()
+    @contextmanager
+    def _locked(self):
+        parent_fd = _open_directory_nofollow(self.lock_path.parent, create=True)
+        try:
+            descriptor = os.open(
+                self.lock_path.name,
+                os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=parent_fd,
+            )
+        finally:
+            os.close(parent_fd)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise ArtifactValidationError(
+                    f"project accounting lock is not a file: {self.lock_path}"
+                )
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+
+    def _persist_values(self, data2_bytes: int, data3_bytes: int) -> None:
         _write_json(
             self.path,
             {
@@ -1515,26 +1552,49 @@ class PersistentProjectAccounting:
         )
 
     def current_bytes(self) -> tuple[int, int]:
-        return self.accounting.current_bytes()
+        with self._locked():
+            persisted = _accounting_values(self.config, self.path)
+            if persisted is not None:
+                self.accounting.replace_current_bytes(*persisted)
+            return self.accounting.current_bytes()
 
     def record_registry_delta(self, path: Path, delta_bytes: int) -> None:
-        self.accounting.record_registry_delta(path, delta_bytes)
-        self._persist()
+        with self._locked():
+            persisted = _accounting_values(self.config, self.path)
+            if persisted is not None:
+                self.accounting.replace_current_bytes(*persisted)
+            self.accounting.record_registry_delta(path, delta_bytes)
+            updated = self.accounting.current_bytes()
+            self._persist_values(*updated)
+
+    def checkpoint_at_batch_boundary(self) -> tuple[int, int]:
+        """Persist cached deltas without recursively walking remote roots."""
+
+        with self._locked():
+            persisted = _accounting_values(self.config, self.path)
+            if persisted is not None:
+                self.accounting.replace_current_bytes(*persisted)
+            current = self.accounting.current_bytes()
+            self._persist_values(*current)
+            return current
 
     def reconcile_at_shard_boundary(self) -> tuple[int, int]:
-        result = self.accounting.reconcile_at_shard_boundary()
-        self._persist()
-        return result
+        with self._locked():
+            result = self.accounting.reconcile_at_shard_boundary()
+            self._persist_values(*result)
+            return result
 
 
-def _accounting_values(config: PipelineConfig, path: Path) -> tuple[int, int]:
+def _accounting_values(
+    config: PipelineConfig, path: Path
+) -> tuple[int, int] | None:
     try:
         value = _safe_json(path, "project accounting")
     except ArtifactValidationError as error:
         cause = error.__cause__
         if not isinstance(cause, FileNotFoundError):
             raise
-        return (0, 0)
+        return None
     if set(value) != {
         "schema_version",
         "artifact_type",
@@ -1562,7 +1622,8 @@ def initialize_project_accounting(
     directory_size: Callable[[Path], int] = _directory_size,
 ) -> PersistentProjectAccounting:
     path = config.paths.data2_root / "control/accounting.json"
-    initial_data2, initial_data3 = _accounting_values(config, path)
+    persisted = _accounting_values(config, path)
+    initial_data2, initial_data3 = persisted or (0, 0)
     accounting = ProjectStorageAccounting(
         config.paths.data2_root,
         config.paths.data3_root,
@@ -1571,7 +1632,8 @@ def initialize_project_accounting(
         directory_size=directory_size,
     )
     persistent = PersistentProjectAccounting(config, accounting, path)
-    persistent.reconcile_at_shard_boundary()
+    if persisted is None:
+        persistent.reconcile_at_shard_boundary()
     return persistent
 
 

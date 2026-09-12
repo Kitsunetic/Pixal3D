@@ -1,10 +1,12 @@
 from hashlib import sha256
 from io import BytesIO
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tarfile
+import time
 from types import SimpleNamespace
 from urllib.request import Request
 
@@ -16,6 +18,16 @@ from data_toolkit import render_cond
 from data_toolkit.pipeline import blender
 from data_toolkit.pipeline.blender import ensure_blender, verify_archive
 from data_toolkit.pipeline.camera import build_condition_views
+
+
+def _native_pid_probe(value):
+    return {"value": value, "pid": os.getpid()}
+
+
+def _native_hang_probe(marker):
+    Path(marker).write_text(str(os.getpid()))
+    time.sleep(10)
+    return {"value": "late"}
 
 
 def test_checksum_verification(tmp_path):
@@ -180,6 +192,12 @@ def test_render_uses_config_and_atomically_publishes(
     args, kwargs = calls[0]
     assert args[0] == "/tools/blender"
     assert args[args.index("--cond_resolution") + 1] == "512"
+    assert args[args.index("--boundary_fit_resolution") + 1] == "128"
+    assert (
+        args[args.index("--boundary_fit_engine") + 1]
+        == "BLENDER_EEVEE_NEXT"
+    )
+    assert args[args.index("--boundary_fit_samples") + 1] == "1"
     assert args[args.index("--cycles_device") + 1] == "OPTIX"
     assert json.loads(args[args.index("--cond_views") + 1]) == (
         build_condition_views(sha, config.render)
@@ -189,6 +207,106 @@ def test_render_uses_config_and_atomically_publishes(
     assert result == {"sha256": sha, "cond_rendered": True}
     assert not (final / "stale").exists()
     assert len(list(final.glob("*.png"))) == config.render.num_views
+
+
+def test_native_renderer_reuses_one_bpy_module_for_multiple_assets(
+    monkeypatch, tmp_path, config
+):
+    loads = []
+    renders = []
+
+    class FakeBpy:
+        class App:
+            version = (4, 5, 1)
+
+        app = App()
+
+    def fake_main(arguments):
+        renders.append(arguments.object)
+        output = Path(arguments.cond_output_folder)
+        _write_render_fixture(output, config.render.num_views)
+
+    fake_renderer = SimpleNamespace(
+        bpy=FakeBpy(),
+        main=fake_main,
+        reset_scene_for_reuse=lambda: None,
+    )
+
+    def fake_import(name):
+        loads.append(name)
+        return fake_renderer
+
+    monkeypatch.setattr(render_cond.importlib, "import_module", fake_import)
+    monkeypatch.setattr(
+        render_cond.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("external Blender was invoked"),
+    )
+    render_cond._load_native_renderer.cache_clear()
+
+    for index in range(2):
+        render_cond._render_cond(
+            f"fixture-{index}.glb",
+            str(index) * 64,
+            root=tmp_path,
+            config=config.render,
+            blender_path=Path("/tools/blender"),
+            timeout_seconds=37,
+            renderer_mode="native",
+        )
+
+    assert loads == ["data_toolkit.blender_script.render_cond"]
+    assert renders == ["fixture-0.glb", "fixture-1.glb"]
+
+
+def test_native_renderer_rejects_a_different_blender_version(
+    monkeypatch, tmp_path, config
+):
+    fake_renderer = SimpleNamespace(
+        bpy=SimpleNamespace(app=SimpleNamespace(version=(4, 4, 0)))
+    )
+    monkeypatch.setattr(
+        render_cond.importlib,
+        "import_module",
+        lambda _name: fake_renderer,
+    )
+    render_cond._load_native_renderer.cache_clear()
+
+    with pytest.raises(RuntimeError, match="requires bpy 4.5.1"):
+        render_cond._render_cond(
+            "fixture.glb",
+            "c" * 64,
+            root=tmp_path,
+            config=config.render,
+            blender_path=Path("/tools/blender"),
+            timeout_seconds=37,
+            renderer_mode="native",
+        )
+
+
+def test_render_can_seed_lighting_for_output_comparison(
+    monkeypatch, tmp_path, config
+):
+    calls = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(args)
+        output = Path(args[args.index("--cond_output_folder") + 1])
+        _write_render_fixture(output, config.render.num_views)
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(render_cond.subprocess, "run", fake_run)
+    render_cond._render_cond(
+        "fixture.glb",
+        "d" * 64,
+        root=tmp_path,
+        config=config.render,
+        blender_path=Path("/tools/blender"),
+        timeout_seconds=37,
+        render_seed=1234,
+    )
+
+    assert calls[0][calls[0].index("--seed") + 1] == "1234"
 
 
 def test_existing_render_is_replaced_with_atomic_exchange(monkeypatch, tmp_path):
@@ -341,6 +459,87 @@ def test_render_main_passes_download_root_to_adapter(
         render_root
         / "renders_cond/new_records/chunk007_part_0.csv"
     ).is_file()
+
+
+def test_native_render_batches_worker_lifecycle_by_asset_count(
+    monkeypatch, tmp_path
+):
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    pd.DataFrame(
+        [
+            {
+                "sha256": f"{index:064x}",
+                "local_path": f"raw/fixture-{index}.glb",
+            }
+            for index in range(9)
+        ]
+    ).to_csv(source_root / "metadata.csv", index=False)
+    calls = []
+
+    def run_bounded(tasks, process_task, **kwargs):
+        calls.append((len(tasks), kwargs))
+        return []
+
+    adapter = SimpleNamespace(
+        add_args=lambda parser: parser.add_argument("--source"),
+        foreach_instance=lambda *args, **kwargs: None,
+        _process_instance=lambda args: None,
+    )
+    monkeypatch.setattr(render_cond, "_import_adapter", lambda name: adapter)
+    monkeypatch.setattr(render_cond, "_run_bounded_native_tasks", run_bounded)
+
+    render_cond.main(
+        [
+            "ObjaverseXL",
+            "--source",
+            "sketchfab",
+            "--root",
+            str(source_root),
+            "--blender_path",
+            "/tools/blender",
+            "--renderer_mode",
+            "native",
+            "--native_worker_max_assets",
+            "7",
+            "--max_workers",
+            "1",
+        ]
+    )
+
+    assert calls == [(9, {"max_assets": 7, "timeout_seconds": 900})]
+
+
+def test_native_render_rejects_multiple_workers_on_one_gpu(
+    monkeypatch, tmp_path
+):
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    pd.DataFrame(
+        [{"sha256": "d" * 64, "local_path": "raw/fixture.glb"}]
+    ).to_csv(source_root / "metadata.csv", index=False)
+    adapter = SimpleNamespace(
+        add_args=lambda parser: parser.add_argument("--source"),
+        foreach_instance=lambda *args, **kwargs: pd.DataFrame(),
+    )
+    monkeypatch.setattr(render_cond, "_import_adapter", lambda name: adapter)
+
+    with pytest.raises(SystemExit):
+        render_cond.main(
+            [
+                "ObjaverseXL",
+                "--source",
+                "sketchfab",
+                "--root",
+                str(source_root),
+                "--blender_path",
+                "/tools/blender",
+                "--renderer_mode",
+                "native",
+                "--max_workers",
+                "2",
+            ]
+        )
 
 
 def test_render_main_rejects_record_prefix_path_separators(
@@ -512,6 +711,76 @@ def test_blender_script_selects_gpu_and_scales_boundary():
     assert '"selected_devices": selected_devices' in source
     assert "130 * arg.cond_resolution / 1024" in source
     assert 'parser.add_argument("--cycles_device"' in source
+    assert "fit_resolution = min(arg.boundary_fit_resolution" in source
+    assert "bpy.context.scene.render.engine = arg.boundary_fit_engine" in source
+    assert "arg.boundary_fit_engine != arg.engine" in source
+    assert "arg.boundary_fit_samples != final_cycles_samples" in source
+    assert "bpy.context.scene.cycles.samples = arg.boundary_fit_samples" in source
+    assert "bpy.context.scene.cycles.samples = final_cycles_samples" in source
+    assert "final_boundary_distance" in source
+    assert 'parser.add_argument("--boundary_fit_resolution"' in source
+
+
+def test_blender_script_restores_original_retry_budget_after_fit_exhaustion():
+    repository = Path(__file__).resolve().parents[2]
+    source = (
+        repository / "data_toolkit/blender_script/render_cond.py"
+    ).read_text()
+
+    assert "fit_exhausted = retry_count >= max_retry" in source
+    assert "final_retry_count = 0" in source
+    assert "fallback_retry_limit = max_retry - final_retry_count" in source
+    assert "while fallback_retries < fallback_retry_limit:" in source
+
+
+def test_native_renderer_dependency_matches_production_blender_version():
+    repository = Path(__file__).resolve().parents[2]
+    requirements = (
+        repository / "data_toolkit/requirements-native-renderer.txt"
+    ).read_text()
+
+    assert "bpy==4.5.1" in requirements.splitlines()
+
+
+def test_render_command_top_level_help_does_not_import_a_dataset_adapter(
+    capsys,
+):
+    render_cond.main(["--help"])
+
+    output = capsys.readouterr().out
+    assert "dataset adapter or canonical source" in output
+
+
+def test_native_worker_recycles_after_bounded_asset_count():
+    records = render_cond._run_bounded_native_tasks(
+        list(range(5)),
+        _native_pid_probe,
+        max_assets=2,
+        timeout_seconds=2,
+    )
+
+    pids = [record["pid"] for record in records]
+    assert pids[0] == pids[1]
+    assert pids[2] == pids[3]
+    assert len({pids[0], pids[2], pids[4]}) == 3
+
+
+def test_native_worker_timeout_terminates_hung_process(tmp_path):
+    marker = tmp_path / "worker.pid"
+    started = time.monotonic()
+
+    with pytest.raises(TimeoutError, match="native renderer timed out"):
+        render_cond._run_bounded_native_tasks(
+            [str(marker)],
+            _native_hang_probe,
+            max_assets=8,
+            timeout_seconds=0.1,
+        )
+
+    assert time.monotonic() - started < 2
+    pid = int(marker.read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
 
 
 def test_blender_render_script_uses_version_aware_obj_importer():

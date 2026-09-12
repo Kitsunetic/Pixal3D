@@ -58,6 +58,12 @@ def test_hash_is_stable():
     assert len(load_config(CONFIG).config_hash()) == 64
 
 
+def test_hash_matches_existing_production_queue_identity():
+    assert load_config(CONFIG).config_hash() == (
+        "ff7dc7073940b869b001b8c8e60525390fe15091f518887814ddc1f3ca35e988"
+    )
+
+
 def test_config_accepts_fp16_only_as_the_supported_post_pilot_dtype(tmp_path):
     config = load_config(
         _write_config(

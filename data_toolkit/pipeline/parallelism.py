@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
+import os
 import threading
+from dataclasses import dataclass
 
 from .config import ParallelismConfig
 
@@ -47,12 +48,17 @@ def geometry_affinity_sets(
 ) -> tuple[tuple[int, ...], ...]:
     if profile.processes * profile.native_threads > 44:
         raise ValueError("geometry affinity profile exceeds 44 physical cores")
-    physical_cores = (*range(0, 20), *range(24, 48))
+    physical_cores = (*range(20), *range(24, 48))
     groups = tuple(
         tuple(physical_cores[index : index + profile.native_threads])
         for index in range(0, len(physical_cores), profile.native_threads)
     )
-    return groups[: profile.processes]
+    group_offset = int(
+        os.environ.get("PIXAL3D_GEOMETRY_AFFINITY_OFFSET", "0")
+    )
+    if group_offset < 0 or group_offset + profile.processes > len(groups):
+        raise ValueError("geometry affinity offset exceeds physical cores")
+    return groups[group_offset : group_offset + profile.processes]
 
 
 @dataclass(frozen=True)

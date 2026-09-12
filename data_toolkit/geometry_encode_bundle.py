@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from math import ceil
 import os
 from pathlib import Path
 import shutil
@@ -11,6 +12,7 @@ import sys
 import tempfile
 from collections.abc import Sequence
 
+from data_toolkit.geometry_bundle import GEOMETRY_SCRIPTS, parse_views
 from data_toolkit.pipeline.instance_manifest import (
     read_asset_ids,
     read_family_instance_paths,
@@ -38,7 +40,11 @@ def _gpu_indices(count: int) -> tuple[int, ...]:
         raise ValueError(
             "PIXAL3D_GPU_INDICES must contain unique nonnegative GPU indices"
         )
-    return indices[:count]
+    if len(indices) != count:
+        raise ValueError(
+            f"PIXAL3D_GPU_INDICES must contain exactly {count} GPU indices"
+        )
+    return indices
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -67,14 +73,38 @@ def main(argv: Sequence[str] | None = None) -> int:
         *(f"PBR-{resolution}" for resolution in resolutions),
         f"SS-{args.ss_resolution}",
     }
-    read_family_instance_paths(
+    family_instances = read_family_instance_paths(
         Path(args.family_instances_file)
         if args.family_instances_file is not None
         else None,
         expected_families,
     )
-    if not read_asset_ids(Path(args.instances)):
+    default_instances = Path(args.instances)
+    if not read_asset_ids(default_instances):
         return 0
+    scheduled_instances: dict[tuple[str, Path], int] = {}
+    for resolution in resolutions:
+        for script, _input_flag, _output_flag in GEOMETRY_SCRIPTS:
+            family = (
+                f"shape-{resolution}"
+                if script == "dual_grid_view.py"
+                else f"PBR-{resolution}"
+            )
+            instances = family_instances.get(family, default_instances)
+            asset_count = len(read_asset_ids(instances))
+            if asset_count:
+                scheduled_instances[(script, instances)] = asset_count
+    producer_waves = 1
+    if scheduled_instances:
+        geometry_job_count = len(parse_views(args.view_indices)) * len(
+            scheduled_instances
+        )
+        workers_per_job = max(1, args.max_workers // geometry_job_count)
+        producer_waves = max(
+            ceil(asset_count / workers_per_job)
+            for asset_count in scheduled_instances.values()
+        )
+    encoder_wait_seconds = args.timeout_seconds * producer_waves
     gpu_indices = _gpu_indices(args.gpu_count)
     rank_count = min(args.encoder_ranks, len(gpu_indices))
     if rank_count <= 0:
@@ -112,7 +142,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--latent_dtype", args.latent_dtype,
         "--micro_batch_sizes", args.micro_batch_sizes,
         "--gpu_memory_target_percent", str(args.gpu_memory_target_percent),
-        "--timeout_seconds", str(args.timeout_seconds),
+        "--timeout_seconds", str(encoder_wait_seconds),
     ]
     if args.family_instances_file is not None:
         encoder_base.extend(
@@ -132,7 +162,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     gpu_indices[rank % len(gpu_indices)]
                 )
                 environment["PIXAL3D_WAIT_FOR_GEOMETRY_SECONDS"] = str(
-                    args.timeout_seconds
+                    encoder_wait_seconds
                 )
                 encoders.append(subprocess.Popen([
                     *encoder_base, "--rank", str(rank),

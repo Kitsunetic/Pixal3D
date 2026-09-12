@@ -116,6 +116,17 @@ class RecordingRunner(PipelineRunner):
         self.validators[command.name] = lambda: True
 
 
+def test_native_service_initialization_uses_configured_source(
+    config, monkeypatch
+):
+    monkeypatch.setenv("PIXAL3D_RENDERER_MODE", "native")
+    monkeypatch.setenv("PIXAL3D_GPU_INDICES", "0")
+
+    services = PipelineServices(config)
+
+    assert "prepare_bundle" in services.validators
+
+
 @pytest.fixture
 def shard_context(tmp_path):
     return ShardContext.for_test(tmp_path, "ABO", "ABO-00000")
@@ -1417,6 +1428,54 @@ def test_run_batch_executes_only_the_claimed_frozen_batch(isolated_config):
     assert [item.batch_id for item in runner.runs] == ["batch001"]
     assert audits == runner.runs
     assert accounting.reconciliations == 1
+
+
+def test_run_batch_checkpoints_cached_accounting_without_full_reconciliation(
+    isolated_config,
+):
+    shas = tuple(f"{index:064x}" for index in range(3))
+    registry = FakeRegistry(
+        pd.DataFrame(
+            {
+                "sha256": shas,
+                "owner_source": ["ABO"] * 3,
+                "shard_id": ["ABO-00000"] * 3,
+            }
+        ),
+        isolated_config.paths.data2_root / "control/assets.parquet",
+    )
+
+    class CachedAccounting(FakeAccounting):
+        def __init__(self):
+            super().__init__()
+            self.checkpoints = 0
+
+        def checkpoint_at_batch_boundary(self):
+            self.checkpoints += 1
+            return (0, 0)
+
+    accounting = CachedAccounting()
+    services = PipelineServices(
+        isolated_config,
+        resource_guard=FakeResourceGuard(),
+        registry_store=registry,
+        runner=FakeShardRunner(),
+        project_accounting=accounting,
+        batch_auditor=lambda context: None,
+        published_batch_verifier=lambda context: None,
+    )
+    services._freeze_batches(
+        "production",
+        "ABO",
+        "ABO-00000",
+        (shas[:2], shas[2:]),
+        shas,
+    )
+
+    services.run_batch("production", "ABO", "ABO-00000", "batch001")
+
+    assert accounting.checkpoints == 1
+    assert accounting.reconciliations == 0
 
 
 def test_run_batch_rejects_unknown_batch(isolated_config):
@@ -5090,6 +5149,34 @@ def test_real_asset_stats_leaf_part_is_accepted_by_production_validator(
     services._validate_asset_stats(context)
 
 
+def test_parallel_asset_stats_validator_ignores_qualification_parts(
+    isolated_config, tmp_path
+):
+    context = replace(
+        ShardContext.for_test(
+            tmp_path / "parallel-asset-stats", "ABO", "ABO-00000"
+        ),
+        record_prefix="chunk000_",
+    )
+    asset_sha = "a" * 64
+    write_instances(context, (asset_sha,))
+    records = context.metadata_root / "asset_stats/new_records"
+    records.mkdir(parents=True)
+    (records / "part_0.csv").write_text(
+        "sha256,num_faces,num_vertices,num_basecolor_tex\n"
+        f"{asset_sha},1,3,2\n"
+    )
+    (records / "part_chunk000_0.csv").write_text(
+        "sha256,num_faces,num_vertices,num_basecolor_tex\n"
+        f"{asset_sha},1,3,2.0\n"
+    )
+    services = PipelineServices(
+        isolated_config, resource_guard=FakeResourceGuard()
+    )
+
+    services._validate_asset_stats(context)
+
+
 def test_escalation_report_includes_terminal_asset_counts(
     isolated_config, shard_context
 ):
@@ -5150,6 +5237,67 @@ def test_staging_publication_never_replaces_existing_destination(tmp_path):
             sha256(replacement).hexdigest(),
         )
 
+    assert destination.read_bytes() == b"existing"
+
+
+def _reject_renameat2(monkeypatch, error_number):
+    class RejectedRenameAt2:
+        argtypes = None
+        restype = None
+
+        def __call__(self, *_args):
+            return -1
+
+    monkeypatch.setattr(
+        orchestrator_module.ctypes,
+        "CDLL",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            renameat2=RejectedRenameAt2()
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator_module.ctypes, "get_errno", lambda: error_number
+    )
+
+
+@pytest.mark.parametrize("error_number", (errno.EINVAL, errno.ENOSYS))
+def test_rename_noreplace_falls_back_when_filesystem_rejects_renameat2(
+    tmp_path, monkeypatch, error_number
+):
+    _reject_renameat2(monkeypatch, error_number)
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.write_bytes(b"payload")
+    directory_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        orchestrator_module._rename_noreplace(
+            source.name, destination.name, directory_fd
+        )
+    finally:
+        os.close(directory_fd)
+
+    assert not source.exists()
+    assert destination.read_bytes() == b"payload"
+
+
+def test_rename_noreplace_fallback_preserves_existing_destination(
+    tmp_path, monkeypatch
+):
+    _reject_renameat2(monkeypatch, errno.EINVAL)
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    source.write_bytes(b"replacement")
+    destination.write_bytes(b"existing")
+    directory_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(FileExistsError):
+            orchestrator_module._rename_noreplace(
+                source.name, destination.name, directory_fd
+            )
+    finally:
+        os.close(directory_fd)
+
+    assert source.read_bytes() == b"replacement"
     assert destination.read_bytes() == b"existing"
 
 

@@ -458,6 +458,9 @@ def _dual_grid_mesh_view(
         skipped_count = 0
         
         for view_idx in view_indices:
+            vertices_for_grid = None
+            total_scale = None
+            box_scale = None
             for res in resolutions:
                 need_process = False
                 
@@ -512,29 +515,18 @@ def _dual_grid_mesh_view(
                         # Sphere normalization (for multi-view transform) - CPU only
                         vertices_sphere, sphere_center, sphere_radius = sphere_normalize_torch(vertices)
                     
-                    # Get transform for current view
-                    transform = transform_mats[view_idx]
-                    
-                    # Multi-view transform - CPU only
-                    transformed_vertices = transform_mesh(vertices_sphere, transform)
-                    
-                    # Post-transform normalization: scale by abs max to [-0.5, 0.5]^3
-                    # Only scale, no center shift, to preserve relative model position
-                    abs_max = transformed_vertices.abs().max().item()
-                    box_scale = 0.49999 / abs_max  # Normalize to [-0.5, 0.5] range
-                    transformed_normalized = transformed_vertices * box_scale
-                    transformed_normalized_cpu = transformed_normalized.contiguous()
-                    
-                    # Compute total scale (from original mesh to final normalized mesh)
-                    total_scale = box_scale / sphere_radius.item()
-                    
-                    # Validate range
-                    assert torch.all(transformed_normalized_cpu >= -0.5) and torch.all(transformed_normalized_cpu <= 0.5), \
-                        f'vertices out of range for {sha256} view {view_idx}'
-                    
-                    # Ensure vertices and faces are on CPU with correct types and contiguous memory
-                    # CPU only, consistent with process_dual_grid in test_ovoxel_transform.py
-                    vertices_for_grid = transformed_normalized_cpu.float().contiguous()
+                    if vertices_for_grid is None:
+                        transform = transform_mats[view_idx]
+                        transformed_vertices = transform_mesh(vertices_sphere, transform)
+                        abs_max = transformed_vertices.abs().max().item()
+                        box_scale = 0.49999 / abs_max
+                        transformed_normalized = transformed_vertices * box_scale
+                        transformed_normalized_cpu = transformed_normalized.contiguous()
+                        total_scale = box_scale / sphere_radius.item()
+                        assert torch.all(transformed_normalized_cpu >= -0.5) and torch.all(transformed_normalized_cpu <= 0.5), \
+                            f'vertices out of range for {sha256} view {view_idx}'
+                        vertices_for_grid = transformed_normalized_cpu.float().contiguous()
+
                     faces_for_grid = faces.long().contiguous()
                     data_for_grid = {'vertices': vertices_for_grid, 'faces': faces_for_grid}
                     

@@ -7,7 +7,6 @@ import os
 from pathlib import Path
 import subprocess
 import threading
-import threading
 import time
 from typing import Callable
 
@@ -115,6 +114,14 @@ class ProjectStorageAccounting:
     def current_bytes(self) -> tuple[int, int]:
         with self._lock:
             return self._data2_bytes, self._data3_bytes
+
+    def replace_current_bytes(self, data2_bytes: int, data3_bytes: int) -> None:
+        if data2_bytes < 0 or data3_bytes < 0:
+            raise ValueError("negative project accounting")
+        with self._lock:
+            self._data2_bytes = data2_bytes
+            self._data3_bytes = data3_bytes
+            self._version += 1
 
     def record_registry_delta(self, path: Path, delta_bytes: int) -> None:
         candidate = Path(path).resolve()

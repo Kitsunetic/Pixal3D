@@ -693,6 +693,8 @@ def _pbr_voxelize_view(
         skipped_count = 0
 
         for view_idx in view_indices:
+            transformed_dump = None
+            total_scale = None
             for res in resolutions:
                 need_process = False
 
@@ -734,11 +736,9 @@ def _pbr_voxelize_view(
                             print(f'No valid objects in PBR dump for {sha256}, skipping')
                             return {'sha256': sha256, 'error': 'No valid objects in PBR dump'}
 
-                    # Get transform for current view
-                    frame = transform_mats[view_idx]
-
-                    # Multi-view transform (deep copy from original dump each time)
-                    transformed_dump, total_scale = transform_pbr_dump(dump, frame)
+                    if transformed_dump is None:
+                        frame = transform_mats[view_idx]
+                        transformed_dump, total_scale = transform_pbr_dump(dump, frame)
 
                     # PBR voxelization
                     coord, attr = o_voxel.convert.blender_dump_to_volumetric_attr(

@@ -111,7 +111,8 @@ def choose_worker_profile(
     if not recent_snapshots:
         return previous
     pressure = any(
-        float(snapshot.get("cpu_percent", 0)) >= 80
+        float(snapshot.get("cpu_percent", 0))
+        >= config.limits.cpu_hard_percent
         or float(snapshot.get("available_ram_gib", 10**9))
         < config.limits.ram_soft_available_gib
         or float(snapshot.get("io_wait_percent", 0)) >= 10
@@ -150,10 +151,15 @@ def choose_worker_profile(
         if pressure:
             current_dump = max(0, current_dump - 1)
             current_voxel = max(0, current_voxel - 1)
+            voxel_workers, native_threads = profiles[current_voxel]
         elif stable:
             current_dump = min(len(dump_steps) - 1, current_dump + 1)
-            current_voxel = min(len(profiles) - 1, current_voxel + 1)
-        voxel_workers, native_threads = profiles[current_voxel]
+            if current_voxel == len(profiles) - 1:
+                voxel_workers, native_threads = full_geometry
+            else:
+                voxel_workers, native_threads = profiles[current_voxel + 1]
+        else:
+            voxel_workers, native_threads = profiles[current_voxel]
     render_workers_per_gpu = previous.render_workers_per_gpu
     render_state = _render_gpu_state(recent_snapshots)
     if render_state is not None:
@@ -252,6 +258,7 @@ class ShardContext:
             output_root=local / "output",
             batch_id=batch_id,
             gate=gate,
+            record_prefix=f"{shard_id}_{batch_id}_",
         )
 
 
@@ -277,7 +284,65 @@ RENDER_ENV = (
 ENCODE_ENV = CPU_ENV + (
     ("ATTN_BACKEND", "sdpa"),
     ("SPARSE_ATTN_BACKEND", "sdpa"),
+    ("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True"),
 )
+BOUNDARY_FIT_RESOLUTION = 128
+BOUNDARY_FIT_ENGINE = "BLENDER_EEVEE_NEXT"
+BOUNDARY_FIT_SAMPLES = 1
+
+
+def _runtime_gpu_count(configured_gpu_count: int) -> int:
+    raw_indices = os.environ.get("PIXAL3D_GPU_INDICES")
+    if raw_indices is None:
+        return configured_gpu_count
+    try:
+        indices = tuple(int(value) for value in raw_indices.split(","))
+    except ValueError as error:
+        raise ValueError(
+            "PIXAL3D_GPU_INDICES must be comma-separated integers"
+        ) from error
+    if (
+        not indices
+        or any(index < 0 for index in indices)
+        or len(set(indices)) != len(indices)
+    ):
+        raise ValueError(
+            "PIXAL3D_GPU_INDICES must contain unique nonnegative GPU indices"
+        )
+    if len(indices) > configured_gpu_count:
+        raise ValueError(
+            "PIXAL3D_GPU_INDICES cannot exceed the configured GPU count"
+        )
+    return len(indices)
+
+
+def _renderer_runtime(source: str, gpu_count: int) -> tuple[str, int]:
+    requested_mode = os.environ.get("PIXAL3D_RENDERER_MODE", "external")
+    if requested_mode not in {"external", "native"}:
+        raise ValueError(
+            "PIXAL3D_RENDERER_MODE must be external or native"
+        )
+    raw_max_assets = os.environ.get("PIXAL3D_NATIVE_WORKER_MAX_ASSETS", "8")
+    try:
+        max_assets = int(raw_max_assets)
+    except ValueError as error:
+        raise ValueError(
+            "PIXAL3D_NATIVE_WORKER_MAX_ASSETS must be a positive integer"
+        ) from error
+    if max_assets <= 0:
+        raise ValueError(
+            "PIXAL3D_NATIVE_WORKER_MAX_ASSETS must be a positive integer"
+        )
+    supports_native = source in {
+        "ObjaverseXL_sketchfab",
+        "ObjaverseXL_github",
+    }
+    mode = requested_mode if supports_native else "external"
+    if mode == "native" and gpu_count != 1:
+        raise ValueError(
+            "native renderer requires exactly one visible GPU per worker"
+        )
+    return mode, max_assets
 
 
 def _validate_identifier(name: str, value: str) -> None:
@@ -354,7 +419,11 @@ def expand_ranked(
             or len(set(gpu_indices)) != len(gpu_indices)
         ):
             raise ValueError("PIXAL3D_GPU_INDICES must contain unique nonnegative GPU indices")
-        gpu_indices = gpu_indices[:command.gpu_ranks]
+        if len(gpu_indices) != command.gpu_ranks:
+            raise ValueError(
+                "PIXAL3D_GPU_INDICES must contain exactly "
+                f"{command.gpu_ranks} GPU indices"
+            )
     total = len(gpu_indices) * command.workers_per_gpu
     if total > 28:
         raise ValueError("ranked command exceeds the 28-process cap")
@@ -396,6 +465,13 @@ def build_preprocessing_dag(
             ),
         )
     dataset = dataset_args(context.source)
+    runtime_gpu_count = _runtime_gpu_count(config.parallelism.gpu_count)
+    renderer_mode, native_worker_max_assets = _renderer_runtime(
+        context.source, runtime_gpu_count
+    )
+    render_workers_per_gpu = (
+        1 if renderer_mode == "native" else profile.render_workers_per_gpu
+    )
     record_args = (
         ("--record_prefix", context.record_prefix)
         if context.record_prefix
@@ -424,6 +500,8 @@ def build_preprocessing_dag(
                 str(context.source_root),
                 "--max_workers",
                 "8",
+                "--record_prefix",
+                f"{context.shard_id}_{context.batch_id}_",
             ),
             CPU_ENV,
         ),
@@ -443,6 +521,16 @@ def build_preprocessing_dag(
                 str(config.render.num_views),
                 "--cond_resolution",
                 str(config.render.resolution),
+                "--boundary_fit_resolution",
+                str(BOUNDARY_FIT_RESOLUTION),
+                "--boundary_fit_engine",
+                BOUNDARY_FIT_ENGINE,
+                "--boundary_fit_samples",
+                str(BOUNDARY_FIT_SAMPLES),
+                "--renderer_mode",
+                renderer_mode,
+                "--native_worker_max_assets",
+                str(native_worker_max_assets),
                 "--blender_path",
                 str(blender),
                 "--cycles_device",
@@ -452,9 +540,9 @@ def build_preprocessing_dag(
                 "--render_workers",
                 str(profile.render_workers),
                 "--render_workers_per_gpu",
-                str(profile.render_workers_per_gpu),
+                str(render_workers_per_gpu),
                 "--gpu_count",
-                str(config.parallelism.gpu_count),
+                str(runtime_gpu_count),
                 *record_args,
             ),
             RENDER_ENV,
@@ -509,9 +597,9 @@ def build_preprocessing_dag(
                     "--gpu_memory_target_percent",
                     str(config.parallelism.gpu_memory_target_percent),
                     "--encoder_ranks",
-                    str(profile.encoder_ranks),
+                    str(min(profile.encoder_ranks, runtime_gpu_count)),
                     "--gpu_count",
-                    str(config.parallelism.gpu_count),
+                    str(runtime_gpu_count),
                     "--timeout_seconds",
                     "900",
                     *record_args,

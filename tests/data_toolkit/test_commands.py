@@ -1,4 +1,4 @@
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 import subprocess
 import sys
@@ -38,6 +38,7 @@ RENDER_ENV = (
 ENCODE_ENV = CPU_ENV + (
     ("ATTN_BACKEND", "sdpa"),
     ("SPARSE_ATTN_BACKEND", "sdpa"),
+    ("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True"),
 )
 
 
@@ -170,7 +171,7 @@ def test_worker_profile_applies_render_step_at_next_dag_boundary(config):
 def test_full_geometry_profile_steps_down_to_existing_safe_profile_on_pressure(config):
     previous = choose_worker_profile((), config)
     pressure = [{
-        "cpu_percent": 81,
+        "cpu_percent": 91,
         "io_wait_percent": 0,
         "available_ram_gib": 200,
         "reasons": [],
@@ -179,6 +180,40 @@ def test_full_geometry_profile_steps_down_to_existing_safe_profile_on_pressure(c
     selected = choose_worker_profile(pressure, config, previous)
 
     assert (selected.voxel_workers, selected.voxel_threads_per_worker) == (11, 4)
+
+
+def test_full_geometry_profile_ignores_soft_cpu_target(config):
+    # Given
+    previous = choose_worker_profile((), config)
+    soft_cpu_load = [{
+        "cpu_percent": 80.4,
+        "io_wait_percent": 0,
+        "available_ram_gib": 200,
+        "reasons": [],
+    }]
+
+    # When
+    selected = choose_worker_profile(soft_cpu_load, config, previous)
+
+    # Then
+    assert (selected.voxel_workers, selected.voxel_threads_per_worker) == (44, 1)
+
+
+def test_reduced_geometry_profile_recovers_full_lane_when_stable(config):
+    # Given
+    previous = WorkerProfile(40, 11, 4, 7, 7, 2)
+    stable = [{
+        "cpu_percent": 60,
+        "io_wait_percent": 2,
+        "available_ram_gib": 200,
+        "reasons": [],
+    }] * 3
+
+    # When
+    selected = choose_worker_profile(stable, config, previous)
+
+    # Then
+    assert (selected.voxel_workers, selected.voxel_threads_per_worker) == (44, 1)
 
 
 def test_dag_accepts_worker_profile(config, tmp_path):
@@ -231,6 +266,8 @@ def test_commands_have_exact_parser_compatible_argv(config, tmp_path):
         str(context.source_root),
         "--max_workers",
         "8",
+        "--record_prefix",
+        "ABO-00000_batch000_",
     )
     blender = str(
         config.paths.local_root
@@ -251,6 +288,16 @@ def test_commands_have_exact_parser_compatible_argv(config, tmp_path):
         str(config.render.num_views),
         "--cond_resolution",
         str(config.render.resolution),
+        "--boundary_fit_resolution",
+        "128",
+        "--boundary_fit_engine",
+        "BLENDER_EEVEE_NEXT",
+        "--boundary_fit_samples",
+        "1",
+        "--renderer_mode",
+        "external",
+        "--native_worker_max_assets",
+        "8",
         "--blender_path",
         blender,
         "--cycles_device",
@@ -336,6 +383,17 @@ def test_internal_command_names_and_arguments_are_exact(config, tmp_path):
     assert _by_name(dag, "cleanup_local").argv == ("internal:cleanup_local",)
 
 
+def test_config_context_namespaces_shared_metadata_records(config):
+    context = ShardContext.from_config(
+        config,
+        "ObjaverseXL_sketchfab",
+        "ObjaverseXL_sketchfab-00012",
+        "batch003",
+    )
+
+    assert context.record_prefix == "ObjaverseXL_sketchfab-00012_batch003_"
+
+
 @pytest.mark.parametrize(
     ("source", "canonical_source"),
     [
@@ -378,6 +436,15 @@ def test_render_and_cpu_stages_apply_thread_and_worker_caps(config, tmp_path):
     assert render.argv[render.argv.index("--render_workers_per_gpu") + 1] == "3"
     assert render.argv[render.argv.index("--num_cond_views") + 1] == "8"
     assert render.argv[render.argv.index("--cond_resolution") + 1] == "512"
+    assert (
+        render.argv[render.argv.index("--boundary_fit_resolution") + 1]
+        == "128"
+    )
+    assert (
+        render.argv[render.argv.index("--boundary_fit_engine") + 1]
+        == "BLENDER_EEVEE_NEXT"
+    )
+    assert render.argv[render.argv.index("--boundary_fit_samples") + 1] == "1"
     assert render.argv[render.argv.index("--cycles_device") + 1] == "OPTIX"
     assert render.argv[render.argv.index("--blender_path") + 1].endswith(
         "blender-4.5.1-linux-x64/blender"
@@ -393,6 +460,10 @@ def test_render_and_cpu_stages_apply_thread_and_worker_caps(config, tmp_path):
     ]
     assert _by_name(dag, "download").env == CPU_ENV
     assert _by_name(dag, "geometry_encode_bundle").env == ENCODE_ENV
+    assert (
+        "PYTORCH_CUDA_ALLOC_CONF",
+        "expandable_segments:True",
+    ) in _by_name(dag, "geometry_encode_bundle").env
     assert all(command.gpu_ranks == 0 for command in external)
     assert all(
         command.env == () and command.gpu_ranks == 0
@@ -417,16 +488,96 @@ def test_all_voxel_and_encoder_commands_use_anchor_views(config, tmp_path):
     )
 
 
+def test_native_renderer_requires_single_gpu_execution_config(
+    config, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("PIXAL3D_RENDERER_MODE", "native")
+    context = ShardContext.for_test(
+        tmp_path, "ObjaverseXL_sketchfab", "ObjaverseXL_sketchfab-00000"
+    )
+
+    with pytest.raises(ValueError, match="exactly one visible GPU"):
+        build_preprocessing_dag(context, config)
+
+
+def test_native_renderer_uses_one_long_lived_worker(
+    config, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("PIXAL3D_RENDERER_MODE", "native")
+    monkeypatch.setenv("PIXAL3D_NATIVE_WORKER_MAX_ASSETS", "8")
+    monkeypatch.setenv("PIXAL3D_GPU_INDICES", "0")
+    context = ShardContext.for_test(
+        tmp_path, "ObjaverseXL_sketchfab", "ObjaverseXL_sketchfab-00000"
+    )
+
+    dag = build_preprocessing_dag(context, config)
+    command = _by_name(dag, "prepare_bundle")
+    geometry = _by_name(dag, "geometry_encode_bundle")
+
+    assert command.argv[command.argv.index("--renderer_mode") + 1] == "native"
+    assert command.argv[
+        command.argv.index("--native_worker_max_assets") + 1
+    ] == "8"
+    assert command.argv[
+        command.argv.index("--render_workers_per_gpu") + 1
+    ] == "1"
+    assert command.argv[command.argv.index("--gpu_count") + 1] == "1"
+    assert geometry.argv[geometry.argv.index("--gpu_count") + 1] == "1"
+    assert geometry.argv[geometry.argv.index("--encoder_ranks") + 1] == "1"
+
+
+def test_native_renderer_setting_falls_back_for_other_dataset_adapters(
+    config, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("PIXAL3D_RENDERER_MODE", "native")
+    monkeypatch.setenv("PIXAL3D_GPU_INDICES", "0")
+    context = ShardContext.for_test(tmp_path, "ABO", "ABO-00000")
+
+    command = _by_name(build_preprocessing_dag(context, config), "prepare_bundle")
+
+    assert command.argv[command.argv.index("--renderer_mode") + 1] == "external"
+
+
+def test_runtime_gpu_allowlist_cannot_exceed_configured_gpu_count(
+    config, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("PIXAL3D_GPU_INDICES", "0,1,2,3,4,5,6,7")
+    context = ShardContext.for_test(tmp_path, "ABO", "ABO-00000")
+
+    with pytest.raises(ValueError, match="configured GPU count"):
+        build_preprocessing_dag(context, config)
+
+
 def test_render_workers_map_round_robin_to_seven_gpus(config, tmp_path):
     assert render_gpu_indices(config.parallelism.gpu_count) == tuple(range(7))
     assert encode_gpu_indices(config.parallelism.gpu_count) == tuple(range(7))
 
 
 def test_ranked_workers_honor_explicit_gpu_allowlist(config, tmp_path, monkeypatch):
-    monkeypatch.setenv("PIXAL3D_GPU_INDICES", "1,2,3,4,5,6")
-    expected = tuple(range(1, 7))
+    monkeypatch.setenv("PIXAL3D_GPU_INDICES", "0,1,2,3,4,5,6")
+    expected = tuple(range(7))
     assert render_gpu_indices(config.parallelism.gpu_count) == expected
     assert encode_gpu_indices(config.parallelism.gpu_count) == expected
+
+
+@pytest.mark.parametrize("value", ("0", "0,1,2,3,4,5,6,7"))
+def test_rank_expansion_rejects_gpu_allowlist_cardinality_mismatch(
+    value, monkeypatch
+):
+    monkeypatch.setenv("PIXAL3D_GPU_INDICES", value)
+
+    with pytest.raises(ValueError, match="exactly 7 GPU indices"):
+        expand_ranked(CommandSpec("ranked", ("worker",), gpu_ranks=7))
+
+
+@pytest.mark.parametrize("indices", (render_gpu_indices, encode_gpu_indices))
+def test_bundle_gpu_indices_reject_allowlist_cardinality_mismatch(
+    indices, monkeypatch
+):
+    monkeypatch.setenv("PIXAL3D_GPU_INDICES", "0")
+
+    with pytest.raises(ValueError, match="exactly 2 GPU indices"):
+        indices(2)
 
 
 @pytest.mark.parametrize("indices", (render_gpu_indices, encode_gpu_indices))
@@ -521,6 +672,7 @@ def test_context_from_config_builds_paths_under_trusted_roots(config):
         work_root=local / "work",
         output_root=local / "output",
         batch_id="batch000",
+        record_prefix="ObjaverseXL_github-00000_batch000_",
     )
     assert context.instances.is_relative_to(config.paths.data2_root / "control")
     assert context.metadata_root.is_relative_to(config.paths.data2_root / "control")

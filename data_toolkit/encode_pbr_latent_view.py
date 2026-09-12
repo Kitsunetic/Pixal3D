@@ -28,6 +28,7 @@ from data_toolkit.pipeline.validation import (
     validate_sparse_latent,
 )
 from data_toolkit.pipeline.geometry_wait import wait_for_geometry
+from data_toolkit.pipeline.rank_partition import interleaved_rank_indices
 from data_toolkit.encode_shape_latent_view import (
     _coordinates_to_uint8,
     _run_bounded_pipeline,
@@ -309,21 +310,20 @@ if __name__ == '__main__':
             instances = opt.instances.split(',')
         metadata = metadata[metadata['sha256'].isin(instances)]
 
+    metadata = metadata.iloc[
+        list(interleaved_rank_indices(len(metadata), opt.rank, opt.world_size))
+    ]
     records = []
-    
+
     # Build all tasks. Files, not stale metadata, are the source of resume truth.
     all_tasks = []
     for _, row in metadata.iterrows():
         sha256 = row['sha256']
         for view_idx in view_indices:
             all_tasks.append((sha256, view_idx))
-    
-    # Split tasks by rank after filtering completed ones
-    start = len(all_tasks) * opt.rank // opt.world_size
-    end = len(all_tasks) * (opt.rank + 1) // opt.world_size
-    tasks = all_tasks[start:end]
-    
-    print(f'Total tasks to validate or process: {len(all_tasks)}, This rank: {len(tasks)}')
+    tasks = all_tasks
+
+    print(f'Total tasks to validate or process on this rank: {len(tasks)}')
 
     def task_paths(task):
         sha256, view_idx = task

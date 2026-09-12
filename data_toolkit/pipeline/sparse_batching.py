@@ -288,6 +288,7 @@ def run_encoder_tasks(
     next_loaded_index = 0
     received_loads = 0
     current_batch_size = micro_batch_size
+    adaptive_batch_ceiling = micro_batch_size
 
     def drain_savers() -> None:
         while True:
@@ -316,7 +317,7 @@ def run_encoder_tasks(
                 time.sleep(0.01)
 
     def process_ready(*, flush: bool) -> None:
-        nonlocal current_batch_size
+        nonlocal current_batch_size, adaptive_batch_ceiling
         while len(pending_batch) >= current_batch_size or (
             flush and pending_batch
         ):
@@ -333,6 +334,7 @@ def run_encoder_tasks(
                 if not _is_cuda_oom(error) or current_batch_size == 1:
                     raise
                 current_batch_size = max(1, current_batch_size // 2)
+                adaptive_batch_ceiling = current_batch_size
                 if torch.cuda.is_initialized():
                     torch.cuda.empty_cache()
                 continue
@@ -354,7 +356,7 @@ def run_encoder_tasks(
                     current_batch_size = max(1, current_batch_size // 2)
                 elif peak_percent < 70.0:
                     current_batch_size = min(
-                        micro_batch_size,
+                        adaptive_batch_ceiling,
                         current_batch_size * 2,
                     )
             del pending_batch[:count]

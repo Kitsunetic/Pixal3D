@@ -273,8 +273,14 @@ def test_abo_rejects_tar_links_before_extraction(tmp_path, link_type):
 
 def test_objaverse_download_processes_are_bounded(monkeypatch, tmp_path):
     module = importlib.import_module("data_toolkit.datasets.ObjaverseXL")
+    contents = b"object"
     metadata = pd.DataFrame(
-        [{"file_identifier": "object.glb", "sha256": "a" * 64}]
+        [
+            {
+                "file_identifier": "object.glb",
+                "sha256": sha256(contents).hexdigest(),
+            }
+        ]
     )
     monkeypatch.setattr(module.oxl, "get_annotations", lambda: metadata.copy())
     seen = []
@@ -282,7 +288,7 @@ def test_objaverse_download_processes_are_bounded(monkeypatch, tmp_path):
     def download_objects(annotations, **kwargs):
         seen.append(kwargs)
         path = tmp_path / "raw/object.glb"
-        path.write_bytes(b"object")
+        path.write_bytes(contents)
         return {"object.glb": str(path)}
 
     monkeypatch.setattr(module.oxl, "download_objects", download_objects)
@@ -290,6 +296,226 @@ def test_objaverse_download_processes_are_bounded(monkeypatch, tmp_path):
     module.download(metadata, str(tmp_path), max_workers=64)
 
     assert seen[0]["processes"] == 8
+
+
+def test_objaverse_download_reuses_verified_local_glb(monkeypatch, tmp_path):
+    module = importlib.import_module("data_toolkit.datasets.ObjaverseXL")
+    contents = b"existing objaverse glb"
+    relative = "raw/hf-objaverse-v1/glbs/000-000/object.glb"
+    local = tmp_path / relative
+    local.parent.mkdir(parents=True)
+    local.write_bytes(contents)
+    digest = sha256(contents).hexdigest()
+    metadata = pd.DataFrame(
+        [
+            {
+                "sha256": digest,
+                "file_identifier": "object.glb",
+                "local_path": relative,
+                "content_sha256": digest,
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        module.oxl,
+        "get_annotations",
+        lambda: pytest.fail("verified local assets need no remote annotations"),
+    )
+    monkeypatch.setattr(
+        module.oxl,
+        "download_objects",
+        lambda *_args, **_kwargs: pytest.fail(
+            "verified local assets must not be downloaded again"
+        ),
+    )
+
+    result = module.download(metadata, str(tmp_path), max_workers=8)
+
+    assert result.to_dict("records") == [
+        {"sha256": digest, "local_path": relative}
+    ]
+
+
+def test_objaverse_download_uses_asset_sha_when_content_digest_is_missing(
+    monkeypatch, tmp_path
+):
+    module = importlib.import_module("data_toolkit.datasets.ObjaverseXL")
+    contents = b"existing objaverse glb"
+    digest = sha256(contents).hexdigest()
+    relative = "raw/objects/object.glb"
+    local = tmp_path / relative
+    local.parent.mkdir(parents=True)
+    local.write_bytes(contents)
+    metadata = pd.DataFrame(
+        [
+            {
+                "sha256": digest,
+                "file_identifier": "object.glb",
+                "local_path": relative,
+                "content_sha256": float("nan"),
+            }
+        ]
+    )
+    monkeypatch.setattr(
+        module.oxl,
+        "get_annotations",
+        lambda: pytest.fail("a verified local asset needs no remote lookup"),
+    )
+
+    result = module.download(metadata, str(tmp_path), max_workers=1)
+
+    assert result.to_dict("records") == [
+        {"sha256": digest, "local_path": relative}
+    ]
+
+
+@pytest.mark.parametrize(
+    "unsafe_path", ["../outside.glb", "/tmp/outside.glb", "raw\\outside.glb"]
+)
+def test_objaverse_instance_rejects_unsafe_metadata_paths(tmp_path, unsafe_path):
+    module = importlib.import_module("data_toolkit.datasets.ObjaverseXL")
+
+    result = module._process_instance(
+        (
+            {"sha256": "a" * 64, "local_path": unsafe_path},
+            str(tmp_path),
+            lambda *_args: pytest.fail("unsafe paths must not reach the worker"),
+        )
+    )
+
+    assert result is None
+
+
+def test_objaverse_instance_rejects_unsafe_zip_members(tmp_path):
+    module = importlib.import_module("data_toolkit.datasets.ObjaverseXL")
+    archive = tmp_path / "raw/github/repos/example/repository.zip"
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("models/object.glb", b"valid")
+        bundle.writestr("../escaped.glb", b"unsafe")
+
+    result = module._process_instance(
+        (
+            {
+                "sha256": "a" * 64,
+                "local_path": (
+                    "raw/github/repos/example/repository.zip/models/object.glb"
+                ),
+            },
+            str(tmp_path),
+            lambda *_args: pytest.fail("unsafe archives must not be consumed"),
+        )
+    )
+
+    assert result is None
+
+
+def test_objaverse_instance_rejects_zip_symlinks(tmp_path):
+    module = importlib.import_module("data_toolkit.datasets.ObjaverseXL")
+    archive = tmp_path / "raw/github/repos/example/repository.zip"
+    archive.parent.mkdir(parents=True)
+    link = zipfile.ZipInfo("models/link.glb")
+    link.create_system = 3
+    link.external_attr = (stat.S_IFLNK | 0o777) << 16
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr(link, "../../outside.glb")
+
+    result = module._process_instance(
+        (
+            {
+                "sha256": "a" * 64,
+                "local_path": (
+                    "raw/github/repos/example/repository.zip/models/link.glb"
+                ),
+            },
+            str(tmp_path),
+            lambda *_args: pytest.fail("zip links must not be consumed"),
+        )
+    )
+
+    assert result is None
+
+
+def test_objaverse_instance_rejects_duplicate_zip_members(tmp_path):
+    module = importlib.import_module("data_toolkit.datasets.ObjaverseXL")
+    archive = tmp_path / "raw/github/repos/example/repository.zip"
+    archive.parent.mkdir(parents=True)
+    with pytest.warns(UserWarning, match="Duplicate name"):
+        with zipfile.ZipFile(archive, "w") as bundle:
+            bundle.writestr("models/object.glb", b"first")
+            bundle.writestr("models/object.glb", b"second")
+
+    result = module._process_instance(
+        (
+            {
+                "sha256": "a" * 64,
+                "local_path": (
+                    "raw/github/repos/example/repository.zip/models/object.glb"
+                ),
+            },
+            str(tmp_path),
+            lambda *_args: pytest.fail("ambiguous archives must not be consumed"),
+        )
+    )
+
+    assert result is None
+
+
+def test_objaverse_instance_streams_only_selected_regular_zip_member(tmp_path):
+    module = importlib.import_module("data_toolkit.datasets.ObjaverseXL")
+    archive = tmp_path / "raw/github/repos/example/repository.zip"
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("models/object.glb", b"selected")
+        bundle.writestr("models/other.glb", b"other")
+
+    result = module._process_instance(
+        (
+            {
+                "sha256": "a" * 64,
+                "local_path": (
+                    "raw/github/repos/example/repository.zip/models/object.glb"
+                ),
+            },
+            str(tmp_path),
+            lambda path, digest: (Path(path).read_bytes(), digest),
+        )
+    )
+
+    assert result == (b"selected", "a" * 64)
+
+
+@pytest.mark.parametrize("mode", ["outside", "symlink", "digest"])
+def test_objaverse_download_rejects_unverified_dependency_paths(
+    monkeypatch, tmp_path, mode
+):
+    module = importlib.import_module("data_toolkit.datasets.ObjaverseXL")
+    expected = sha256(b"expected").hexdigest()
+    metadata = pd.DataFrame(
+        [{"sha256": expected, "file_identifier": "object.glb"}]
+    )
+    monkeypatch.setattr(module.oxl, "get_annotations", lambda: metadata.copy())
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    if mode == "outside":
+        returned = tmp_path.parent / "outside.glb"
+        returned.write_bytes(b"expected")
+    elif mode == "symlink":
+        target = raw / "target.glb"
+        target.write_bytes(b"expected")
+        returned = raw / "object.glb"
+        returned.symlink_to(target)
+    else:
+        returned = raw / "object.glb"
+        returned.write_bytes(b"wrong")
+    monkeypatch.setattr(
+        module.oxl,
+        "download_objects",
+        lambda *_args, **_kwargs: {"object.glb": str(returned)},
+    )
+
+    with pytest.raises(ValueError, match="downloaded Objaverse asset"):
+        module.download(metadata, str(tmp_path), max_workers=1)
 
 
 def test_download_wrapper_maps_alias_and_merges_records(monkeypatch, tmp_path):
@@ -333,6 +559,8 @@ def test_download_wrapper_maps_alias_and_merges_records(monkeypatch, tmp_path):
                 "2",
                 "--max_workers",
                 "5",
+                "--record_prefix",
+                "batch000_",
             ]
         )
 
@@ -341,6 +569,10 @@ def test_download_wrapper_maps_alias_and_merges_records(monkeypatch, tmp_path):
     assert [call[2]["max_workers"] for call in calls] == [5, 5]
     merged = pd.read_csv(root / "raw/metadata.csv")
     assert merged["sha256"].tolist() == ["a" * 64, "b" * 64]
+    assert sorted(path.name for path in (root / "raw/new_records").iterdir()) == [
+        "part_batch000_0.csv",
+        "part_batch000_1.csv",
+    ]
     assert not (root / "raw/metadata.csv.tmp").exists()
 
 

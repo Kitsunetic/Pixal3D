@@ -1,0 +1,2 @@
+# Optional dependency for --renderer_mode native.
+bpy==4.5.1

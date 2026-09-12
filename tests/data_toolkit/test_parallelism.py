@@ -243,3 +243,15 @@ def test_geometry_affinity_sets_are_disjoint_and_cover_all_physical_cores(profil
     assert len(assigned) == 44
     assert assigned == set(range(20)) | set(range(24, 48))
     assert assigned.isdisjoint(range(20, 24))
+
+
+def test_geometry_affinity_sets_honor_job_offset(monkeypatch):
+    # Given
+    monkeypatch.setenv("PIXAL3D_GEOMETRY_AFFINITY_OFFSET", "11")
+
+    # When
+    affinity_sets = geometry_affinity_sets(GeometryProfile(11, 1))
+
+    # Then
+    assigned = set().union(*(set(value) for value in affinity_sets))
+    assert assigned == set(range(11, 20)) | {24, 25}

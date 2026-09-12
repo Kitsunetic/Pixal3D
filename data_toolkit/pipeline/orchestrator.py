@@ -2396,10 +2396,21 @@ def _rename_noreplace(
             os.fsencode(destination_name),
             1,
         )
-        != 0
+        == 0
     ):
-        error_number = ctypes.get_errno()
-        raise OSError(error_number, os.strerror(error_number))
+        return
+    error_number = ctypes.get_errno()
+    if error_number in {errno.EINVAL, errno.ENOSYS}:
+        os.link(
+            source_name,
+            destination_name,
+            src_dir_fd=source_directory_fd,
+            dst_dir_fd=destination_directory_fd,
+            follow_symlinks=False,
+        )
+        os.unlink(source_name, dir_fd=source_directory_fd)
+        return
+    raise OSError(error_number, os.strerror(error_number))
 
 
 def _read_regular_bytes_nofollow(
@@ -3259,8 +3270,13 @@ class PipelineServices:
         self._tool_commit = tool_commit
 
         self.validators: dict[str, Callable[[], bool]] = {}
+        validation_source = config.sources[0]
         for command in build_preprocessing_dag(
-            ShardContext.for_test(Path("/nonexistent"), "ABO", "ABO-00000"),
+            ShardContext.for_test(
+                Path("/nonexistent"),
+                validation_source,
+                f"{validation_source}-00000",
+            ),
             config,
         ):
             self.validators[command.name] = (
@@ -4672,10 +4688,16 @@ class PipelineServices:
                 ) from error
             raise
         try:
+            expected_prefix = f"part_{context.record_prefix}"
             names = sorted(
                 name
                 for name in os.listdir(directory_fd)
-                if name.startswith("part_") and name.endswith(".csv")
+                if name.startswith(expected_prefix)
+                and name.endswith(".csv")
+                and (
+                    bool(context.record_prefix)
+                    or name.removeprefix("part_").removesuffix(".csv").isdigit()
+                )
             )
         finally:
             os.close(directory_fd)
@@ -6135,7 +6157,15 @@ class PipelineServices:
         self, context: ShardContext, boundary: str
     ) -> None:
         try:
-            self.project_accounting.reconcile_at_shard_boundary()
+            checkpoint = getattr(
+                self.project_accounting,
+                "checkpoint_at_batch_boundary",
+                None,
+            )
+            if boundary == "batch" and callable(checkpoint):
+                checkpoint()
+            else:
+                self.project_accounting.reconcile_at_shard_boundary()
         except (
             InfrastructureError,
             IntegrationProviderRequired,

@@ -144,8 +144,11 @@ def _dump(directory, pbr=False):
 
 def _asset_stats():
     root = Path(_option("--root")) / "asset_stats/new_records"
+    prefix = (
+        _option("--record_prefix") if "--record_prefix" in os.sys.argv else ""
+    )
     _atomic_csv(
-        root / "part_fake.csv",
+        root / f"part_{prefix}0.csv",
         ("sha256", "num_faces", "num_vertices"),
         (
             {"sha256": asset_sha, "num_faces": 12, "num_vertices": 8}

@@ -44,7 +44,11 @@ def _gpu_indices(count: int) -> tuple[int, ...]:
         raise ValueError(
             "PIXAL3D_GPU_INDICES must contain unique nonnegative GPU indices"
         )
-    return indices[:count]
+    if len(indices) != count:
+        raise ValueError(
+            f"PIXAL3D_GPU_INDICES must contain exactly {count} GPU indices"
+        )
+    return indices
 
 
 def _worker_budget(
@@ -69,6 +73,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--output_root", required=True)
     parser.add_argument("--num_cond_views", type=int, required=True)
     parser.add_argument("--cond_resolution", type=int, required=True)
+    parser.add_argument("--boundary_fit_resolution", type=int, required=True)
+    parser.add_argument("--boundary_fit_engine", required=True)
+    parser.add_argument("--boundary_fit_samples", type=int, required=True)
+    parser.add_argument(
+        "--renderer_mode", choices=("external", "native"), default="external"
+    )
+    parser.add_argument("--native_worker_max_assets", type=int, default=8)
     parser.add_argument("--blender_path", required=True)
     parser.add_argument("--cycles_device", required=True)
     parser.add_argument("--dump_workers", type=int, required=True)
@@ -80,6 +91,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not read_asset_ids(Path(args.instances)):
         return 0
     gpu_indices = _gpu_indices(min(args.gpu_count, args.render_workers))
+    if args.native_worker_max_assets <= 0:
+        parser.error("native worker max assets must be positive")
+    if args.renderer_mode == "native" and (
+        args.gpu_count != 1
+        or len(gpu_indices) != 1
+        or args.render_workers_per_gpu != 1
+    ):
+        parser.error(
+            "native renderer requires exactly one visible GPU and one worker"
+        )
     requested_render_workers = len(gpu_indices) * args.render_workers_per_gpu
     if min(args.dump_workers, requested_render_workers, args.render_workers) <= 0:
         parser.error("worker and GPU counts must be positive")
@@ -111,6 +132,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "--render_cond_root", args.output_root,
                 "--num_cond_views", str(args.num_cond_views),
                 "--cond_resolution", str(args.cond_resolution),
+                "--boundary_fit_resolution", str(args.boundary_fit_resolution),
+                "--boundary_fit_engine", args.boundary_fit_engine,
+                "--boundary_fit_samples", str(args.boundary_fit_samples),
+                "--renderer_mode", args.renderer_mode,
+                "--native_worker_max_assets", str(args.native_worker_max_assets),
                 "--blender_path", args.blender_path,
                 "--cycles_device", args.cycles_device, "--max_workers", "1",
                 *record, "--rank", str(rank),

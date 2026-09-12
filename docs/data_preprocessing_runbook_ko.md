@@ -397,9 +397,26 @@ worker는 queue lease를 잡기 전에 PyTorch/CUDA 버전, 등록 GPU, Blender 
 의존성을 설치한 다음 TRELLIS.2와 동일하게 CuMesh, FlexGEMM, O-Voxel을 현재
 PyTorch 2.8/CUDA 12.8 환경에서 빌드하고, 다음 점검이 모두 성공해야 등록한다.
 
+ObjaverseXL에서 optimized native renderer를 사용할 worker는 같은 conda 환경에
+Blender Python module도 설치한다. 이 옵션은 GPU 하나만 노출한 container/worker에서
+사용하며, 다른 dataset adapter는 동일 supervisor 안에서 external Blender 경로로
+자동 전환된다.
+
 ```bash
+python -m pip install -r data_toolkit/requirements-native-renderer.txt
 python -c 'import torch, cumesh, flex_gemm, o_voxel, nvdiffrast; assert tuple(map(int, torch.__version__.split("+")[0].split(".")[:2])) >= (2, 8); assert torch.version.cuda == "12.8"; assert torch.cuda.is_available()'
+python -c 'import bpy; assert bpy.app.version[:3] == (4, 5, 1)'
 $LOCAL_PATH/tools/blender-4.5.1-linux-x64/blender --version
+```
+
+supervisor를 시작하기 전에 native mode를 명시한다. worker preflight는 queue lease를
+잡기 전에 `bpy==4.5.1`까지 검사하므로 dependency가 빠진 container는 작업을 claim하지
+않는다.
+
+```bash
+export PIXAL3D_RENDERER_MODE=native
+export PIXAL3D_NATIVE_WORKER_MAX_ASSETS=8
+export PIXAL3D_GPU_INDICES=0
 ```
 
 같은 `node-id`/`local-root`에 worker를 두 번 실행하면 두 번째 프로세스는 비차단

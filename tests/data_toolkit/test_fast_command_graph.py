@@ -68,16 +68,16 @@ def test_bundle_leaf_clis_expose_production_controls():
 def test_geometry_bundle_skips_excluded_pbr_families(tmp_path, monkeypatch):
     asset = "a" * 64
     instances = tmp_path / "all.txt"
-    shape = tmp_path / "shape.txt"
-    pbr = tmp_path / "pbr.txt"
     instances.write_text(f"{asset}\n")
-    shape.write_text(f"{asset}\n")
-    pbr.write_text("")
-    family_paths = {
-        **{f"shape-{resolution}": str(shape) for resolution in (256, 512, 1024)},
-        **{f"PBR-{resolution}": str(pbr) for resolution in (256, 512, 1024)},
-        "SS-64": str(shape),
-    }
+    family_paths = {}
+    for family, contents in (("shape", f"{asset}\n"), ("PBR", "")):
+        for resolution in (256, 512, 1024):
+            path = tmp_path / f"{family}-{resolution}.txt"
+            path.write_text(contents)
+            family_paths[f"{family}-{resolution}"] = str(path)
+    ss = tmp_path / "SS-64.txt"
+    ss.write_text(f"{asset}\n")
+    family_paths["SS-64"] = str(ss)
     family_manifest = tmp_path / "families.json"
     family_manifest.write_text(json.dumps(family_paths))
     launched = []
@@ -102,8 +102,81 @@ def test_geometry_bundle_skips_excluded_pbr_families(tmp_path, monkeypatch):
     assert len(launched) == 2
     assert all("dual_grid_view.py" in command[1] for command in launched)
     assert all(command[command.index("--resolution") + 1] == "256,512,1024" for command in launched)
-    assert all(command[command.index("--max_workers") + 1] == "5" for command in launched)
-    assert all(command[command.index("--native_threads") + 1] == "4" for command in launched)
+    assert [
+        command[command.index("--max_workers") + 1]
+        for command in launched
+    ] == ["6", "5"]
+    assert all(command[command.index("--native_threads") + 1] == "1" for command in launched)
+
+
+def test_geometry_bundle_assigns_disjoint_affinity_lanes(tmp_path, monkeypatch):
+    # Given
+    assets = tuple(f"{index:064x}" for index in range(64))
+    instances = tmp_path / "all.txt"
+    instances.write_text("\n".join(assets) + "\n")
+    launched = []
+    monkeypatch.setattr(
+        geometry_bundle,
+        "run_bounded",
+        lambda commands, max_processes: launched.extend(commands),
+    )
+
+    # When
+    result = geometry_bundle.main([
+        "ABO", "--root", str(tmp_path), "--instances", str(instances),
+        "--mesh_dump_root", str(tmp_path), "--pbr_dump_root", str(tmp_path),
+        "--transform_root", str(tmp_path), "--voxel_root", str(tmp_path),
+        "--resolutions", "256,512,1024", "--view_indices", "0-1",
+        "--max_workers", "44", "--native_threads", "1",
+    ])
+
+    # Then
+    assert result == 0
+    assert [
+        command[command.index("--max_workers") + 1]
+        for command, _environment in launched
+    ] == ["11", "11", "11", "11"]
+    assert [
+        environment["PIXAL3D_GEOMETRY_AFFINITY_OFFSET"]
+        for _command, environment in launched
+    ] == ["0", "11", "22", "33"]
+
+
+def test_geometry_bundle_reuses_affinity_only_after_a_wave_finishes(
+    tmp_path,
+    monkeypatch,
+):
+    # Given
+    asset = "a" * 64
+    instances = tmp_path / "all.txt"
+    instances.write_text(f"{asset}\n")
+    waves = []
+    monkeypatch.setattr(
+        geometry_bundle,
+        "run_bounded",
+        lambda commands, max_processes: waves.append(tuple(commands)),
+    )
+
+    # When
+    result = geometry_bundle.main([
+        "ABO", "--root", str(tmp_path), "--instances", str(instances),
+        "--mesh_dump_root", str(tmp_path), "--pbr_dump_root", str(tmp_path),
+        "--transform_root", str(tmp_path), "--voxel_root", str(tmp_path),
+        "--resolutions", "256", "--view_indices", "0-5",
+        "--max_workers", "4", "--native_threads", "4",
+    ])
+
+    # Then
+    assert result == 0
+    assert [len(wave) for wave in waves] == [4, 4, 4]
+    assert all(
+        [
+            environment["PIXAL3D_GEOMETRY_AFFINITY_OFFSET"]
+            for _command, environment in wave
+        ]
+        == ["0", "1", "2", "3"]
+        for wave in waves
+    )
 
 
 def test_encoder_bundle_skips_excluded_pbr_families(tmp_path, monkeypatch):
@@ -197,7 +270,7 @@ def test_instance_reader_rejects_symlink_and_unsorted_ids(tmp_path):
         read_asset_ids(target)
 
 
-def test_encoder_rank_count_is_capped_by_gpu_allowlist(tmp_path, monkeypatch):
+def test_encoder_rank_count_rejects_gpu_allowlist_mismatch(tmp_path, monkeypatch):
     asset = "a" * 64
     instances = tmp_path / "instances.txt"
     instances.write_text(f"{asset}\n")
@@ -218,24 +291,22 @@ def test_encoder_rank_count_is_capped_by_gpu_allowlist(tmp_path, monkeypatch):
     monkeypatch.setattr(geometry_encode_bundle.subprocess, "Popen", Process)
     monkeypatch.setattr(geometry_encode_bundle, "wait_all", lambda _processes: None)
 
-    assert geometry_encode_bundle.main([
-        "ABO", "--root", str(tmp_path), "--instances", str(instances),
-        "--mesh_dump_root", str(tmp_path), "--pbr_dump_root", str(tmp_path),
-        "--transform_root", str(tmp_path), "--voxel_root", str(tmp_path),
-        "--shape_latent_root", str(tmp_path), "--pbr_latent_root", str(tmp_path),
-        "--ss_latent_root", str(tmp_path), "--resolutions", "256,512,1024",
-        "--view_indices", "0-1", "--latent_dtype", "float16",
-        "--micro_batch_sizes", "64:1,256:1,512:1,1024:1",
-        "--ss_resolution", "64", "--max_workers", "1", "--native_threads", "1",
-        "--loader_workers", "1", "--saver_workers", "1", "--encoder_ranks", "7",
-        "--gpu_count", "7", "--timeout_seconds", "1",
-        "--gpu_memory_target_percent", "80",
-    ]) == 0
+    with pytest.raises(ValueError, match="exactly 7 GPU indices"):
+        geometry_encode_bundle.main([
+            "ABO", "--root", str(tmp_path), "--instances", str(instances),
+            "--mesh_dump_root", str(tmp_path), "--pbr_dump_root", str(tmp_path),
+            "--transform_root", str(tmp_path), "--voxel_root", str(tmp_path),
+            "--shape_latent_root", str(tmp_path), "--pbr_latent_root", str(tmp_path),
+            "--ss_latent_root", str(tmp_path), "--resolutions", "256,512,1024",
+            "--view_indices", "0-1", "--latent_dtype", "float16",
+            "--micro_batch_sizes", "64:1,256:1,512:1,1024:1",
+            "--ss_resolution", "64", "--max_workers", "1", "--native_threads", "1",
+            "--loader_workers", "1", "--saver_workers", "1", "--encoder_ranks", "7",
+            "--gpu_count", "7", "--timeout_seconds", "1",
+            "--gpu_memory_target_percent", "80",
+        ])
 
-    encoders = [process for process in launched if "data_toolkit.encode_latent_bundle" in process.command]
-    assert len(encoders) == 1
-    assert encoders[0].command[-4:] == ["--rank", "0", "--world_size", "1"]
-    assert encoders[0].env["CUDA_VISIBLE_DEVICES"] == "0"
+    assert launched == []
 
 
 def test_empty_bundle_still_validates_family_manifest(tmp_path):

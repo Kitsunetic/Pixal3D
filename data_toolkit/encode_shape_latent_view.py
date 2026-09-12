@@ -31,6 +31,7 @@ from data_toolkit.pipeline.validation import (
     validate_sparse_latent,
 )
 from data_toolkit.pipeline.geometry_wait import wait_for_geometry
+from data_toolkit.pipeline.rank_partition import interleaved_rank_indices
 
 import pixal3d.models as models
 import pixal3d.modules.sparse as sp
@@ -506,9 +507,9 @@ if __name__ == '__main__':
             instances = opt.instances.split(',')
         metadata = metadata[metadata['sha256'].isin(instances)]
 
-    start = len(metadata) * opt.rank // opt.world_size
-    end = len(metadata) * (opt.rank + 1) // opt.world_size
-    metadata = metadata[start:end]
+    metadata = metadata.iloc[
+        list(interleaved_rank_indices(len(metadata), opt.rank, opt.world_size))
+    ]
     records = []
     
     # Build all tasks. Files, not stale metadata, are the source of resume truth.

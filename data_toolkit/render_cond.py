@@ -4,19 +4,23 @@ import errno
 import importlib
 import json
 import math
+import multiprocessing
 import os
-from functools import partial
-from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
+import queue
 import shutil
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache, partial
+from pathlib import Path
+from types import SimpleNamespace
 
-from easydict import EasyDict as edict
 import pandas as pd
+from easydict import EasyDict as edict
 from PIL import Image
 from tqdm import tqdm
+
 try:
     from data_toolkit.pipeline.blender import ensure_blender
     from data_toolkit.pipeline.camera import build_condition_views
@@ -38,6 +42,7 @@ AT_FDCWD = -100
 RENAME_EXCHANGE = 2
 LIBC = ctypes.CDLL(None, use_errno=True)
 RENAMEAT2 = getattr(LIBC, "renameat2", None)
+NATIVE_BPY_VERSION = (4, 5, 1)
 if RENAMEAT2 is not None:
     RENAMEAT2.argtypes = [
         ctypes.c_int,
@@ -71,6 +76,142 @@ def _import_adapter(adapter_name: str):
 
 def _install_blender(tool_root: Path = DEFAULT_BLENDER_TOOL_ROOT) -> Path:
     return ensure_blender(tool_root)
+
+
+@lru_cache(maxsize=1)
+def _load_native_renderer():
+    renderer = importlib.import_module("data_toolkit.blender_script.render_cond")
+    version = tuple(renderer.bpy.app.version[:3])
+    if version != NATIVE_BPY_VERSION:
+        expected = ".".join(str(value) for value in NATIVE_BPY_VERSION)
+        actual = ".".join(str(value) for value in version)
+        raise RuntimeError(
+            f"native renderer requires bpy {expected}, found {actual}"
+        )
+    return renderer
+
+
+def _run_native_renderer(
+    file_path,
+    cond_views,
+    output_folder,
+    config,
+    boundary_fit_resolution,
+    boundary_fit_engine,
+    boundary_fit_samples,
+    render_seed,
+):
+    renderer = _load_native_renderer()
+    expanded_path = os.path.expanduser(file_path)
+    try:
+        if expanded_path.endswith(".blend"):
+            renderer.bpy.ops.wm.open_mainfile(filepath=expanded_path)
+        renderer.main(
+            SimpleNamespace(
+                object=expanded_path,
+                cond_views=json.dumps(cond_views),
+                cond_resolution=config.resolution,
+                boundary_fit_resolution=boundary_fit_resolution,
+                boundary_fit_engine=boundary_fit_engine,
+                boundary_fit_samples=boundary_fit_samples,
+                cond_output_folder=str(output_folder),
+                engine="CYCLES",
+                cycles_device=config.cycles_device,
+                seed=render_seed,
+            )
+        )
+    finally:
+        renderer.reset_scene_for_reuse()
+
+
+def _native_task_worker(tasks, process_task, results) -> None:
+    for index, task in enumerate(tasks):
+        try:
+            result = process_task(task)
+        except BaseException as error:
+            results.put(("error", index, type(error).__name__, str(error)))
+            return
+        results.put(("result", index, result))
+
+
+def _terminate_native_worker(process) -> None:
+    if not process.is_alive():
+        process.join()
+        return
+    process.terminate()
+    process.join(timeout=5)
+    if process.is_alive():
+        process.kill()
+        process.join()
+
+
+def _run_bounded_native_tasks(
+    tasks,
+    process_task,
+    *,
+    max_assets: int,
+    timeout_seconds: float,
+):
+    if max_assets <= 0:
+        raise ValueError("native worker max assets must be positive")
+    if timeout_seconds <= 0:
+        raise ValueError("native renderer timeout must be positive")
+
+    context = multiprocessing.get_context("fork")
+    records = []
+    for start in range(0, len(tasks), max_assets):
+        batch = tasks[start:start + max_assets]
+        results = context.Queue()
+        process = context.Process(
+            target=_native_task_worker,
+            args=(batch, process_task, results),
+        )
+        process.start()
+        try:
+            for expected_index in range(len(batch)):
+                try:
+                    message = results.get(timeout=timeout_seconds)
+                except queue.Empty as error:
+                    _terminate_native_worker(process)
+                    raise TimeoutError(
+                        "native renderer timed out after "
+                        f"{timeout_seconds} seconds"
+                    ) from error
+                if message[0] == "error":
+                    _terminate_native_worker(process)
+                    raise RuntimeError(
+                        f"native renderer worker failed with {message[2]}: "
+                        f"{message[3]}"
+                    )
+                _, index, record = message
+                if index != expected_index:
+                    _terminate_native_worker(process)
+                    raise RuntimeError("native renderer returned tasks out of order")
+                if record is not None:
+                    records.append(record)
+            process.join(timeout=5)
+            if process.is_alive():
+                _terminate_native_worker(process)
+                raise RuntimeError("native renderer worker did not exit")
+            if process.exitcode != 0:
+                raise RuntimeError(
+                    f"native renderer worker exited with code {process.exitcode}"
+                )
+        finally:
+            _terminate_native_worker(process)
+            results.close()
+            results.join_thread()
+    return records
+
+
+def _process_dataset_instance(
+    metadatum,
+    *,
+    process_instance,
+    output_dir,
+    func,
+):
+    return process_instance((metadatum, output_dir, func))
 
 
 def _finite_number(value) -> bool:
@@ -194,6 +335,11 @@ def _render_cond(
     config,
     blender_path,
     timeout_seconds,
+    boundary_fit_resolution=128,
+    boundary_fit_engine="BLENDER_EEVEE_NEXT",
+    boundary_fit_samples=1,
+    renderer_mode="external",
+    render_seed=None,
 ):
     cond_views = build_condition_views(sha256, config)
     final = Path(root) / "renders_cond" / sha256
@@ -213,6 +359,12 @@ def _render_cond(
         json.dumps(cond_views),
         "--cond_resolution",
         str(config.resolution),
+        "--boundary_fit_resolution",
+        str(min(config.resolution, boundary_fit_resolution)),
+        "--boundary_fit_engine",
+        boundary_fit_engine,
+        "--boundary_fit_samples",
+        str(boundary_fit_samples),
         "--cond_output_folder",
         str(temporary),
         "--engine",
@@ -220,16 +372,32 @@ def _render_cond(
         "--cycles_device",
         config.cycles_device,
     ]
+    if render_seed is not None:
+        args.extend(("--seed", str(render_seed)))
     if file_path.endswith(".blend"):
         args.insert(1, file_path)
     try:
-        subprocess.run(
-            args,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=True,
-            timeout=timeout_seconds,
-        )
+        if renderer_mode == "native":
+            _run_native_renderer(
+                file_path,
+                cond_views,
+                temporary,
+                config,
+                min(config.resolution, boundary_fit_resolution),
+                boundary_fit_engine,
+                boundary_fit_samples,
+                render_seed,
+            )
+        elif renderer_mode == "external":
+            subprocess.run(
+                args,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=True,
+                timeout=timeout_seconds,
+            )
+        else:
+            raise ValueError(f"unknown renderer mode: {renderer_mode}")
         _validate_render_output(
             temporary, config.num_views, config.resolution
         )
@@ -245,6 +413,13 @@ def main(argv: list[str] | None = None) -> None:
     argv = sys.argv[1:] if argv is None else argv
     if not argv:
         raise SystemExit("dataset name is required")
+    if argv[0] in {"-h", "--help"}:
+        parser = argparse.ArgumentParser(
+            description="Render Pixal3D conditioning views for a dataset adapter."
+        )
+        parser.add_argument("dataset", help="dataset adapter or canonical source")
+        parser.print_help()
+        return
 
     canonical_source = OBJAVERSE_ALIASES.get(argv[0])
     adapter_name = "ObjaverseXL" if canonical_source else argv[0]
@@ -281,6 +456,20 @@ def main(argv: list[str] | None = None) -> None:
         help="Number of conditional views to render",
     )
     parser.add_argument("--cond_resolution", type=int, default=512)
+    parser.add_argument("--boundary_fit_resolution", type=int, default=128)
+    parser.add_argument(
+        "--boundary_fit_engine",
+        choices=("CYCLES", "BLENDER_EEVEE_NEXT", "BLENDER_WORKBENCH"),
+        default="BLENDER_EEVEE_NEXT",
+    )
+    parser.add_argument("--boundary_fit_samples", type=int, default=1)
+    parser.add_argument(
+        "--renderer_mode",
+        choices=("external", "native"),
+        default=os.environ.get("PIXAL3D_RENDERER_MODE", "external"),
+    )
+    parser.add_argument("--native_worker_max_assets", type=int, default=8)
+    parser.add_argument("--render_seed", type=int, default=None)
     parser.add_argument("--blender_path", type=str, default=None)
     parser.add_argument("--cycles_device", type=str, default="OPTIX")
     parser.add_argument("--timeout_seconds", type=int, default=900)
@@ -292,6 +481,16 @@ def main(argv: list[str] | None = None) -> None:
     opt = edict(vars(parser.parse_args(argv[1:])))
     if any(separator in opt.record_prefix for separator in ("/", "\\", "\0")):
         raise ValueError("record prefix must not contain path separators")
+    if opt.boundary_fit_resolution <= 0:
+        parser.error("--boundary_fit_resolution must be positive")
+    if opt.boundary_fit_samples <= 0:
+        parser.error("--boundary_fit_samples must be positive")
+    if opt.native_worker_max_assets <= 0:
+        parser.error("--native_worker_max_assets must be positive")
+    if opt.renderer_mode == "native" and opt.max_workers != 1:
+        parser.error("native renderer requires exactly one worker per GPU")
+    if opt.renderer_mode == "native" and adapter_name != "ObjaverseXL":
+        parser.error("native renderer currently supports ObjaverseXL only")
     if canonical_source is not None:
         opt.source = canonical_source
     opt.download_root = opt.download_root or opt.root
@@ -399,14 +598,39 @@ def main(argv: list[str] | None = None) -> None:
         config=render_config,
         blender_path=blender_path,
         timeout_seconds=opt.timeout_seconds,
+        boundary_fit_resolution=opt.boundary_fit_resolution,
+        boundary_fit_engine=opt.boundary_fit_engine,
+        boundary_fit_samples=opt.boundary_fit_samples,
+        renderer_mode=opt.renderer_mode,
+        render_seed=opt.render_seed,
     )
-    cond_rendered = dataset_utils.foreach_instance(
-        metadata,
-        opt.download_root,
-        func,
-        max_workers=opt.max_workers,
-        desc="Rendering objects",
-    )
+    if opt.renderer_mode == "native":
+        process_instance = getattr(dataset_utils, "_process_instance", None)
+        if process_instance is None:
+            raise RuntimeError(
+                f"native renderer is unsupported for adapter {adapter_name}"
+            )
+        process_task = partial(
+            _process_dataset_instance,
+            process_instance=process_instance,
+            output_dir=opt.download_root,
+            func=func,
+        )
+        rendered = _run_bounded_native_tasks(
+            metadata.to_dict("records"),
+            process_task,
+            max_assets=opt.native_worker_max_assets,
+            timeout_seconds=opt.timeout_seconds,
+        )
+        cond_rendered = pd.DataFrame.from_records(rendered)
+    else:
+        cond_rendered = dataset_utils.foreach_instance(
+            metadata,
+            opt.download_root,
+            func,
+            max_workers=opt.max_workers,
+            desc="Rendering objects",
+        )
     cond_rendered = pd.concat(
         [cond_rendered, pd.DataFrame.from_records(records)]
     )

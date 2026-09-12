@@ -204,9 +204,42 @@ def _gpu_inventory() -> list[tuple[int, str]]:
     for line in result.stdout.splitlines():
         index, name = line.split(",", 1)
         inventory.append((int(index.strip()), name.strip()))
-    if [index for index, _ in inventory] != list(range(7)):
-        raise RuntimeError("hardware preflight requires contiguous GPUs 0 through 6")
+    indices = [index for index, _ in inventory]
+    if not indices or len(set(indices)) != len(indices):
+        raise RuntimeError("hardware preflight requires unique visible GPUs")
     return inventory
+
+
+def _selected_gpu_inventory(
+    devices: list[tuple[int, str]], gpu_count: int
+) -> list[tuple[int, str]]:
+    raw_indices = os.environ.get("PIXAL3D_GPU_INDICES")
+    if raw_indices is None:
+        selected_indices = tuple(range(gpu_count))
+    else:
+        try:
+            selected_indices = tuple(
+                int(value) for value in raw_indices.split(",")
+            )
+        except ValueError as error:
+            raise RuntimeError(
+                "PIXAL3D_GPU_INDICES must be comma-separated integers"
+            ) from error
+    if (
+        len(selected_indices) != gpu_count
+        or any(index < 0 for index in selected_indices)
+        or len(set(selected_indices)) != len(selected_indices)
+    ):
+        raise RuntimeError(
+            "hardware preflight GPU allowlist must match configured GPU count"
+        )
+    inventory = dict(devices)
+    missing = set(selected_indices) - set(inventory)
+    if missing:
+        raise RuntimeError(
+            f"hardware preflight GPUs are not visible: {sorted(missing)}"
+        )
+    return [(index, inventory[index]) for index in selected_indices]
 
 
 def _software_inventory(blender_path: Path) -> dict:
@@ -246,9 +279,9 @@ def _collect_hardware_preflight(
     benchmark = storage_benchmark or benchmark_storage
 
     blender_path = install(config.paths.local_root / "tools")
-    devices = inventory()
-    if len(devices) != 7:
-        raise RuntimeError("hardware preflight requires exactly seven GPUs")
+    devices = _selected_gpu_inventory(
+        inventory(), config.parallelism.gpu_count
+    )
     script_path = (
         Path(__file__).resolve().parents[1]
         / "blender_script"
