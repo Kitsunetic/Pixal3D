@@ -444,6 +444,7 @@ docker run -d --name "youngwoo_diyscene_fast_${NODE_ID}" \
 docker exec "youngwoo_diyscene_fast_${NODE_ID}" bash -lc "
   cd /root/dev/Pixal3D-fast
   git merge-base --is-ancestor \"${TESTED_CODE_COMMIT}\" HEAD
+  source /home/rvi/conda/etc/profile.d/conda.sh
   conda activate pixal3d
   CONFIG=data_toolkit/configs/multiview_preprocess.yaml
   export PIXAL3D_RENDERER_MODE=native
