@@ -431,7 +431,7 @@ container 내부 등록 GPU는 항상 ordinal `0`이다. 예를 들어 n7의 물
 N=0
 NODE_ID="node7-gpu${N}"
 CPU_LIMIT=8
-TESTED_CODE_COMMIT=05643ee3850c6286181d0a2f81bf06b7ead93697
+TESTED_CODE_COMMIT=04f7e60dced5392df7aa2c2f626cc55cdceb987d
 
 docker run -d --name "youngwoo_diyscene_fast_${NODE_ID}" \
   --gpus "device=${N}" \

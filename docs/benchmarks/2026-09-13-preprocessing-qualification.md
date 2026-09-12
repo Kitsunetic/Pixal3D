@@ -17,7 +17,9 @@ test suite는 892 passed였다. 이후 NFS fallback, descriptor-pinned Objaverse
 reproducible comparator까지 포함한 최종 suite는 900 passed였다. 이 보강은 정상 산출물
 계산 알고리즘을 바꾸지 않는다.
 최종 suite가 검증한 code tree는
-`05643ee3850c6286181d0a2f81bf06b7ead93697`이다.
+`04f7e60dced5392df7aa2c2f626cc55cdceb987d`이다. 저해상도 fitting과 최초 target
+resolution 검증이 불일치하면 원래 radius와 10회 budget으로 legacy full-resolution
+loop를 완전히 재실행하므로 unseen mesh에서도 fallback 의미를 보존한다.
 
 ## 성능 결과
 

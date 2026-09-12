@@ -1,11 +1,12 @@
 {
   "scope": "ObjaverseXL_sketchfab production path, 100 assets",
   "qualified_tool_commit": "a9114d82588e019e529204affdc97f08d46ca47f",
-  "tested_code_commit": "05643ee3850c6286181d0a2f81bf06b7ead93697",
+  "tested_code_commit": "04f7e60dced5392df7aa2c2f626cc55cdceb987d",
   "post_qualification_hardening": {
     "worker_reap_fix": "756f5d16e71293ac02286a13556dc71abd1c983b",
     "asset_and_nfs_hardening": "348aaa6935e4695babd6ed641ce70df1d6646156",
-    "quality_gate": "05643ee3850c6286181d0a2f81bf06b7ead93697"
+    "quality_gate": "05643ee3850c6286181d0a2f81bf06b7ead93697",
+    "legacy_target_mismatch_fallback": "04f7e60dced5392df7aa2c2f626cc55cdceb987d"
   },
   "qualification_config_hash": "19184d5a1c0d2a6d817f9f44a8d35af392caaa8dd7e4cbff1d585c0685cb11d7",
   "canonical_config_hash": "ff7dc7073940b869b001b8c8e60525390fe15091f518887814ddc1f3ca35e988",
@@ -16,7 +17,7 @@
     "quality-comparator-result.json": "f032fcfaa5b9a47d4f6fd0d12fa3b7c804b43cbb4ca80ef503c2e3606c0eb495",
     "reference-vs-final-render.json": "f1bda55c8977087110f98d3a44718b33caafa9cfb0e8aa30ddb803d67a076811",
     "reference-vs-optimized-render.json": "b00496a20fe0fe95a36f952a6a41c9a3a9cdb549213747675eb96f6a6af65485",
-    "test-result.txt": "330ba6f0cc6403bf398cc20a828d8378c6234fef4900afbee5c1146bc7bd7b91"
+    "test-result.txt": "6c28409b678f70f9d1706826d18fa2d70230c4d0326c97a66fea63482229ec34"
   },
   "original_n7_evidence_sha256": {
     "results/reference-vs-final-render.json": "1e015616292782a92fdf987875ce4b083a929779a961435c93217627ec121657",

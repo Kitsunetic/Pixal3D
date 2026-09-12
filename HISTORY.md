@@ -2009,3 +2009,10 @@ failure 0/alpha IoU 1.0, frozen 1,310 latent NPZ 비교는 failure 0/max relativ
 0.1417104%로 통과했다. qualification config, 100개 asset list, 비교 report, evidence hash,
 test log를 저장소에 포함했다. 전체 suite 최종 결과는 900 passed, 기존 `torch.cross`
 deprecation warning 1개였다.
+
+마지막 code review에서 저해상도 fitting은 수렴했지만 첫 512px 검증이 불일치하는 경우,
+기존 구현이 저해상도 retry를 차감한 남은 budget만 쓰는 corner case를 발견했다. target
+resolution 검증이 한 번이라도 실패하면 저해상도 radius를 버리고 원래 radius에서 legacy
+full-resolution 10회 loop를 그대로 재실행하도록 수정했다. 기존 100-asset exact-camera
+경로는 최초 target 검증을 통과하므로 추가 연산이 없고, 불일치 mesh만 보수적 fallback을
+사용한다. 이 수정까지 포함한 전체 suite는 900 passed, warning 1개였다.
