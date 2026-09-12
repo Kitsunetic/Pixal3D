@@ -428,9 +428,10 @@ container 내부 등록 GPU는 항상 ordinal `0`이다. 예를 들어 n7의 물
 
 ```bash
 # host에서 한 번, 검증된 runtime tree를 불변 image에 복사한다.
-SOURCE_ROOT=/file3/youngwoo/pixal3d-fast-release-c1002e9
-TESTED_CODE_COMMIT=c1002e990a74187f5b01f2290238f7a4eb698262
-PIXAL3D_FAST_IMAGE=pixal3d-fast:c1002e9
+SOURCE_ROOT=/file3/youngwoo/pixal3d-fast-release-87b58b4
+TESTED_CODE_COMMIT=87b58b49a07f91d0d7c069b11044a5881fade64f
+TESTED_RUNTIME_TREE=b7b315125600bbfa4d134a6f6e2987f12e9d6103
+PIXAL3D_FAST_IMAGE=pixal3d-fast:87b58b4
 
 set -euo pipefail
 if [ ! -e "$SOURCE_ROOT" ]; then
@@ -442,10 +443,12 @@ fi
 git -C "$SOURCE_ROOT" fetch origin "$TESTED_CODE_COMMIT"
 git -C "$SOURCE_ROOT" checkout --detach "$TESTED_CODE_COMMIT"
 test "$(git -C "$SOURCE_ROOT" rev-parse HEAD)" = "$TESTED_CODE_COMMIT"
+test "$(git -C "$SOURCE_ROOT" rev-parse HEAD:data_toolkit)" = "$TESTED_RUNTIME_TREE"
 test -z "$(git -C "$SOURCE_ROOT" status --porcelain=v1 --untracked-files=all)"
 docker build \
   --build-arg BASE_IMAGE=f1.unist.info:443/jhenv6@sha256:d373b9e28450f3a79dd917708bc81eaa0cdbb1638da82f310bd4e7721161d4ab \
   --build-arg PIXAL3D_RUNTIME_COMMIT="$TESTED_CODE_COMMIT" \
+  --build-arg PIXAL3D_RUNTIME_TREE="$TESTED_RUNTIME_TREE" \
   -f "$SOURCE_ROOT/docker/production-fast-overlay.Dockerfile" \
   -t "$PIXAL3D_FAST_IMAGE" "$SOURCE_ROOT"
 
@@ -465,6 +468,7 @@ docker exec "youngwoo_diyscene_fast_${NODE_ID}" bash -lc "
   set -euo pipefail
   cd /root/dev/Pixal3D-fast
   test \"\$(cat .pixal3d-runtime-commit)\" = \"${TESTED_CODE_COMMIT}\"
+  test \"\$(cat .pixal3d-runtime-tree)\" = \"${TESTED_RUNTIME_TREE}\"
   source /home/rvi/conda/etc/profile.d/conda.sh
   conda activate torch
   CONFIG=data_toolkit/configs/multiview_preprocess.yaml

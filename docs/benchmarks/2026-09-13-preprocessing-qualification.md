@@ -16,12 +16,15 @@ E2E 범위에는 포함되지 않았다.
 test suite는 892 passed였다. 이후 NFS fallback, descriptor-pinned Objaverse input과
 reproducible comparator까지 포함한 최종 suite는 900 passed였다. 이 보강은 정상 산출물
 계산 알고리즘을 바꾸지 않는다.
-최종 suite가 검증한 runtime code tree는
-`c1002e990a74187f5b01f2290238f7a4eb698262`이다. 저해상도 fitting과 최초 target
+최종 suite가 검증한 runtime commit은
+`87b58b49a07f91d0d7c069b11044a5881fade64f`이고 `data_toolkit` runtime tree는
+`b7b315125600bbfa4d134a6f6e2987f12e9d6103`이다. 저해상도 fitting과 최초 target
 resolution 검증이 불일치하면 원래 radius와 10회 budget으로 legacy full-resolution
 loop를 완전히 재실행한다. 이 동작은 source-string 검사가 아니라 replay 조건과 초기화
 상태를 실행하는 regression test로 고정했다. comparator는 입력 root가 없거나 비교 가능한
-artifact가 0개이면 실패하도록 fail-closed로 보강했다.
+artifact가 0개이면 실패하도록 fail-closed로 보강했다. JSON/NPZ의 non-finite 값과 경로에
+사용되는 비정상 asset SHA-256도 거부하며, Objaverse input은 실제 processor에 전달하기
+직전 열린 descriptor의 digest를 다시 검증한다.
 
 ## 성능 결과
 
@@ -108,8 +111,9 @@ production에서는 GPU 하나만 노출한 container를 GPU당 하나씩 실행
 container별로 분리하고, 검증 뒤에만 canonical output을 연결한다.
 
 최종 overlay Dockerfile은 n7에서 실제 build했다. 기존 image의 `bpy 4.4.0`은 pinned
-`bpy 4.5.1`로 교체됐고, GPU 하나를 노출한 임시 container에서 exact commit marker,
-Blender 4.5.1, Torch 2.11.0+cu128, RTX 4090 인식을 확인했다. 결과와 base image ID는
+`bpy 4.5.1`로 교체됐고, GPU 하나를 노출한 임시 container에서 exact commit/runtime-tree marker,
+Blender 4.5.1, Torch 2.11.0+cu128, RTX 4090 인식을 확인했다. build 단계 자체도 Git commit,
+`data_toolkit` tree와 clean source를 검증하고, `bpy` wheel은 SHA-256 고정 설치한다. 결과와 base image ID는
 `overlay-image-smoke.json`에 기록했으며 임시 container/image/build root는 제거했다.
 
 ## 운영 threat model과 장애 복구
@@ -151,7 +155,7 @@ alpha IoU 1.0으로 통과했고, latent 1,310 NPZ도 failure 0, 최대 relative
 0.1417104%로 0.2% 기준을 통과했다. exact command와 machine-readable 결과는
 `quality-comparator-result.json`과 `latent-comparator-result.json`에 있다.
 빈 root, 누락된 root, non-finite reference/candidate가 성공으로 판정되지 않는 regression도
-최종 906-test suite에 포함한다.
+최종 911-test suite에 포함한다.
 
 ## 보존된 증거
 

@@ -2040,3 +2040,12 @@ GPU 0 하나를 노출한 임시 container에서 commit marker, Blender 4.5.1, T
 RTX 4090 인식을 확인했다. 임시 image/container/build root는 검사 후 제거했다.
 운영 runbook은 기존 non-Git source directory에 의존하지 않고 fork의 exact commit을 새 release
 directory에 detached checkout하며, dirty/untracked 상태를 거부하고 base image도 digest로 고정한다.
+
+최종 runtime `87b58b49a07f91d0d7c069b11044a5881fade64f`
+(`data_toolkit` tree `b7b315125600bbfa4d134a6f6e2987f12e9d6103`)에서는 추가 handoff
+검토 결과를 반영했다. comparator는 JSON/NPZ 양쪽의 non-finite numeric 값을 거부하고,
+asset SHA-256은 경로 생성 전에 엄격한 lowercase 64-hex로 검증한다. Objaverse direct/zip
+input은 processor에 넘기기 직전 열린 descriptor/member의 digest를 다시 확인해 앞선 검사 뒤의
+파일 교체도 탐지한다. overlay image build는 build context 내부 Git commit, `data_toolkit` tree,
+clean status를 직접 검증하고 `bpy==4.5.1` wheel SHA-256을 고정한다. n7에서 이 exact runtime을
+새로 build해 GPU 0 smoke를 통과했으며 전체 test suite는 911 passed, warning 1개였다.

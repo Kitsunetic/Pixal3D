@@ -1,19 +1,25 @@
 {
   "host": "n7",
-  "runtime_commit": "c1002e990a74187f5b01f2290238f7a4eb698262",
-  "base_image": "f1.unist.info:443/jhenv6:cu128-260813",
+  "runtime_commit": "87b58b49a07f91d0d7c069b11044a5881fade64f",
+  "runtime_tree": "b7b315125600bbfa4d134a6f6e2987f12e9d6103",
+  "base_image": "f1.unist.info:443/jhenv6@sha256:d373b9e28450f3a79dd917708bc81eaa0cdbb1638da82f310bd4e7721161d4ab",
   "base_image_id": "sha256:c2ea54d7bc70f7b7f63db2e72a4c2970be9217f29f794a07ceb98c162c1a461c",
   "base_image_digest": "f1.unist.info:443/jhenv6@sha256:d373b9e28450f3a79dd917708bc81eaa0cdbb1638da82f310bd4e7721161d4ab",
   "dockerfile": "docker/production-fast-overlay.Dockerfile",
   "build_exit_code": 0,
-  "build_log_sha256": "c9593e4b0e305180c7de0b3eed622102c50e21b3135da3175e56a6098530cc9f",
+  "build_log_sha256": "a0def65b3961746eaa43031622ec2270e8a82184092c5c01fb02ce9c92974ba3",
+  "source_commit_verified_during_build": true,
+  "source_tree_verified_during_build": true,
+  "source_clean_verified_during_build": true,
+  "bpy_wheel_sha256_required": true,
   "container_exit_code": 0,
   "gpu_visibility": "one physical GPU exposed as ordinal 0",
   "observed": {
     "bpy": "4.5.1 LTS",
     "torch": "2.11.0+cu128",
     "gpu": "NVIDIA GeForce RTX 4090",
-    "commit_marker_exact": true
+    "commit_marker_exact": true,
+    "runtime_tree_marker_exact": true
   },
   "cleanup": {
     "temporary_container_removed": true,
