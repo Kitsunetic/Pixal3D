@@ -10,5 +10,9 @@ COPY . .
 RUN test -n "${PIXAL3D_RUNTIME_COMMIT}" \
     && printf '%s\n' "${PIXAL3D_RUNTIME_COMMIT}" \
         > /root/dev/Pixal3D-fast/.pixal3d-runtime-commit
+RUN /home/rvi/conda/envs/torch/bin/python -m pip install --no-cache-dir \
+        -r data_toolkit/requirements-native-renderer.txt \
+    && /home/rvi/conda/envs/torch/bin/python -c \
+        'import bpy; assert bpy.app.version[:3] == (4, 5, 1)'
 
 CMD ["sleep", "infinity"]

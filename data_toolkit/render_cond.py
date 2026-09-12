@@ -1,6 +1,4 @@
 import argparse
-from collections.abc import Iterator
-from contextlib import contextmanager
 import ctypes
 import errno
 import fcntl
@@ -14,7 +12,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from functools import lru_cache, partial
 from pathlib import Path
 from types import SimpleNamespace
@@ -296,12 +296,19 @@ def _validate_render_output(
             )
 
 
+def _remove_output_path(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+
+
 def _cleanup_legacy_previous(final: Path) -> None:
-    previous = final.with_name(f".{final.name}.previous")
-    if previous.is_dir():
-        shutil.rmtree(previous)
-    elif previous.exists():
-        previous.unlink()
+    _remove_output_path(final.with_name(f".{final.name}.previous"))
+
+
+def _cleanup_interrupted_current(final: Path) -> None:
+    _remove_output_path(final.with_name(f".{final.name}.current"))
 
 
 @contextmanager
@@ -320,10 +327,33 @@ def _publication_lock(final: Path) -> Iterator[None]:
 
 def _recover_render_output(final: Path) -> None:
     previous = final.with_name(f".{final.name}.previous")
-    if not previous.exists():
+    current = final.with_name(f".{final.name}.current")
+    if final.exists():
         return
-    if not final.exists():
+    if previous.exists():
         os.replace(previous, final)
+        _remove_output_path(current)
+    elif current.exists():
+        os.replace(current, final)
+
+
+def _validate_existing_render_output(
+    final: Path,
+    num_views: int,
+    resolution: int,
+) -> None:
+    _recover_render_output(final)
+    try:
+        _validate_render_output(final, num_views, resolution)
+    except ValueError:
+        previous = final.with_name(f".{final.name}.previous")
+        if not previous.exists():
+            raise
+        _validate_render_output(previous, num_views, resolution)
+        _remove_output_path(final)
+        os.replace(previous, final)
+    _cleanup_legacy_previous(final)
+    _cleanup_interrupted_current(final)
 
 
 def _rename_exchange(left: Path, right: Path) -> None:
@@ -363,28 +393,39 @@ def _publish_render_output_unlocked(temporary: Path, final: Path) -> None:
         if error.errno not in unsupported:
             raise
         previous = final.with_name(f".{final.name}.previous")
-        _cleanup_legacy_previous(final)
-        os.replace(final, previous)
+        preserve_previous = previous.exists()
+        backup = (
+            final.with_name(f".{final.name}.current")
+            if preserve_previous
+            else previous
+        )
+        _remove_output_path(backup)
+        os.replace(final, backup)
         try:
             os.replace(temporary, final)
+        # Roll back even when worker cancellation interrupts publication.
         except BaseException:
             try:
-                os.replace(previous, final)
+                os.replace(backup, final)
             except OSError as rollback_error:
+                recovery = previous if previous.exists() else backup
                 raise RuntimeError(
                     f"render publication failed; previous output is "
-                    f"recoverable at {previous}"
+                    f"recoverable at {recovery}"
                 ) from rollback_error
             raise
-        shutil.rmtree(previous)
+        _remove_output_path(backup)
+        if preserve_previous:
+            _remove_output_path(previous)
     else:
-        shutil.rmtree(temporary)
+        _remove_output_path(temporary)
+        _cleanup_legacy_previous(final)
+        _cleanup_interrupted_current(final)
 
 
 def _publish_render_output(temporary: Path, final: Path) -> None:
     with _publication_lock(final):
         _recover_render_output(final)
-        _cleanup_legacy_previous(final)
         _publish_render_output_unlocked(temporary, final)
 
 
@@ -636,13 +677,11 @@ def main(argv: list[str] | None = None) -> None:
             )
             try:
                 with _publication_lock(final):
-                    _recover_render_output(final)
-                    _validate_render_output(
+                    _validate_existing_render_output(
                         final,
                         render_config.num_views,
                         render_config.resolution,
                     )
-                    _cleanup_legacy_previous(final)
             except ValueError:
                 pass
             else:

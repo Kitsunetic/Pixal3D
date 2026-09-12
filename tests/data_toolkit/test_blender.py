@@ -1,26 +1,29 @@
-import ast
-from concurrent.futures import ThreadPoolExecutor
 import errno
-from hashlib import sha256
-from io import BytesIO
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tarfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from hashlib import sha256
+from io import BytesIO
+from pathlib import Path
 from types import SimpleNamespace
 from urllib.request import Request
 
 import pandas as pd
-from PIL import Image
 import pytest
+from PIL import Image
 
 from data_toolkit import render_cond
 from data_toolkit.pipeline import blender
 from data_toolkit.pipeline.blender import ensure_blender, verify_archive
+from data_toolkit.pipeline.boundary_fit import (
+    legacy_replay_state,
+    target_requires_legacy_replay,
+)
 from data_toolkit.pipeline.camera import build_condition_views
 
 
@@ -32,22 +35,6 @@ def _native_hang_probe(marker):
     Path(marker).write_text(str(os.getpid()))
     time.sleep(10)
     return {"value": "late"}
-
-
-def _load_blender_script_function(name):
-    repository = Path(__file__).resolve().parents[2]
-    source = (
-        repository / "data_toolkit/blender_script/render_cond.py"
-    ).read_text()
-    module = ast.parse(source)
-    definition = next(
-        node
-        for node in module.body
-        if isinstance(node, ast.FunctionDef) and node.name == name
-    )
-    namespace = {}
-    exec(compile(ast.Module([definition], []), source, "exec"), namespace)
-    return namespace[name]
 
 
 def test_checksum_verification(tmp_path):
@@ -522,6 +509,72 @@ def test_publish_fallback_recovers_after_publication_and_rollback_failures(
     assert not previous.exists()
 
 
+def test_publish_double_failure_preserves_preexisting_last_known_good(
+    monkeypatch, tmp_path
+):
+    final = tmp_path / "asset"
+    previous = tmp_path / ".asset.previous"
+    temporary = tmp_path / ".asset.new"
+    for path, value in (
+        (final, "invalid-current"),
+        (previous, "last-known-good"),
+        (temporary, "new"),
+    ):
+        path.mkdir()
+        (path / "value").write_text(value)
+    real_replace = os.replace
+    calls = 0
+
+    def unsupported_exchange(_temporary, _final):
+        raise OSError(errno.EOPNOTSUPP, "exchange is unsupported")
+
+    def fail_publication_and_rollback(source, destination):
+        nonlocal calls
+        calls += 1
+        if calls in {2, 3}:
+            raise OSError(errno.EIO, "injected rename failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(render_cond, "_rename_exchange", unsupported_exchange)
+    monkeypatch.setattr(
+        render_cond.os,
+        "replace",
+        fail_publication_and_rollback,
+    )
+
+    with pytest.raises(RuntimeError, match="recoverable"):
+        render_cond._publish_render_output(temporary, final)
+
+    assert not final.exists()
+    assert (previous / "value").read_text() == "last-known-good"
+    assert (tmp_path / ".asset.current" / "value").read_text() == (
+        "invalid-current"
+    )
+
+    monkeypatch.setattr(render_cond.os, "replace", real_replace)
+    with render_cond._publication_lock(final):
+        render_cond._recover_render_output(final)
+
+    assert (final / "value").read_text() == "last-known-good"
+    assert not previous.exists()
+    assert not (tmp_path / ".asset.current").exists()
+
+
+def test_validation_restores_valid_previous_over_invalid_final(tmp_path):
+    final = tmp_path / "asset"
+    previous = tmp_path / ".asset.previous"
+    final.mkdir()
+    (final / "partial").write_text("invalid")
+    previous.mkdir()
+    _write_render_fixture(previous, num_views=8)
+
+    with render_cond._publication_lock(final):
+        render_cond._validate_existing_render_output(final, 8, 512)
+
+    assert len(list(final.glob("*.png"))) == 8
+    assert not previous.exists()
+
+
 def test_concurrent_publications_are_serialized(monkeypatch, tmp_path):
     final = tmp_path / "asset"
     final.mkdir()
@@ -891,16 +944,14 @@ def test_blender_script_selects_gpu_and_scales_boundary():
 
 
 def test_blender_script_replays_original_budget_after_target_disagreement():
-    requires_replay = _load_blender_script_function(
-        "target_requires_legacy_replay"
-    )
-    replay_state = _load_blender_script_function("legacy_replay_state")
-
-    assert requires_replay(True) is True
-    assert requires_replay(False, touches_boundary=True) is True
-    assert requires_replay(False, too_far=True) is True
-    assert requires_replay(False, False, False) is False
-    assert replay_state(2.75, 10) == (2.75, 0, 10)
+    assert target_requires_legacy_replay(True) is True
+    assert target_requires_legacy_replay(
+        False,
+        touches_boundary=True,
+    ) is True
+    assert target_requires_legacy_replay(False, too_far=True) is True
+    assert target_requires_legacy_replay(False, False, False) is False
+    assert legacy_replay_state(2.75, 10) == (2.75, 0, 10)
 
 
 def test_native_renderer_dependency_matches_production_blender_version():

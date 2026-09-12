@@ -7,7 +7,7 @@ import argparse
 import json
 import math
 from pathlib import Path
-from typing import Any, TypeAlias, cast
+from typing import TypeAlias
 
 import numpy as np
 import torch
@@ -76,9 +76,13 @@ def _compare_mapping(
         if expected.shape != actual.shape or expected.dtype != actual.dtype:
             failures.append(f"{label}: shape or dtype differs")
             continue
-        if np.issubdtype(actual.dtype, np.number) and not np.all(np.isfinite(actual)):
-            failures.append(f"{label}: non-finite candidate values")
-            continue
+        if np.issubdtype(actual.dtype, np.number):
+            if not np.all(np.isfinite(expected)):
+                failures.append(f"{label}: non-finite reference values")
+                continue
+            if not np.all(np.isfinite(actual)):
+                failures.append(f"{label}: non-finite candidate values")
+                continue
         if key in EXACT_ARRAY_KEYS or relative.suffix == ".vxz":
             if not np.array_equal(expected, actual):
                 failures.append(f"{label}: exact values differ")
@@ -99,16 +103,15 @@ def _compare_mapping(
 def _read_vxz(path: Path) -> dict[str, Array]:
     import o_voxel
 
-    coords, attributes = cast(
-        tuple[torch.Tensor, dict[str, torch.Tensor]],
-        cast(object, o_voxel.io.read_vxz(str(path), num_threads=1)),
-    )
+    result = o_voxel.io.read_vxz(str(path), num_threads=1)
+    coords: torch.Tensor = result[0]
+    attributes: dict[str, torch.Tensor] = result[1]
     arrays: dict[str, Array] = {"coords": coords.cpu().numpy()}
     arrays.update({key: value.cpu().numpy() for key, value in attributes.items()})
     return arrays
 
 
-def _json_close(reference: Any, candidate: Any) -> bool:
+def _json_close(reference: object, candidate: object) -> bool:
     if isinstance(reference, dict) and isinstance(candidate, dict):
         return reference.keys() == candidate.keys() and all(
             _json_close(reference[key], candidate[key]) for key in reference
@@ -130,7 +133,7 @@ def compare_benchmark_outputs(
     rgb_policy: str = "diagnostic",
     min_rgb_psnr: float = DEFAULT_MIN_SEEDED_RGB_PSNR,
     max_latent_relative_l2: float = DEFAULT_MAX_LATENT_RELATIVE_L2,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     failures: list[str] = []
     if not reference_root.is_dir():
         failures.append(f"reference root is not a directory: {reference_root}")
@@ -232,7 +235,7 @@ def main() -> int:
         max_latent_relative_l2=args.max_latent_relative_l2,
     )
     print(json.dumps(report, allow_nan=True, sort_keys=True))
-    return 0 if report["passed"] else 1
+    return 0 if report["passed"] is True else 1
 
 
 if __name__ == "__main__":

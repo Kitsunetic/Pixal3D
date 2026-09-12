@@ -94,3 +94,19 @@ def test_empty_or_missing_roots_fail_closed(tmp_path):
     assert report["passed"] is False
     assert any("no comparable artifacts" in item for item in report["failures"])
     assert any("not a directory" in item for item in report["failures"])
+
+
+def test_non_finite_reference_values_fail_closed(tmp_path):
+    reference = tmp_path / "reference"
+    candidate = tmp_path / "candidate"
+    reference.mkdir()
+    candidate.mkdir()
+    np.savez(reference / "latent.npz", feats=np.array([np.nan], dtype=np.float32))
+    np.savez(candidate / "latent.npz", feats=np.array([0.0], dtype=np.float32))
+
+    report = compare_benchmark_outputs(reference, candidate)
+
+    assert report["passed"] is False
+    assert any(
+        "non-finite reference values" in item for item in report["failures"]
+    )

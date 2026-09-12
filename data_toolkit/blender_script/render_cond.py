@@ -6,6 +6,22 @@ import numpy as np
 import json
 import glob
 from PIL import Image
+try:
+    from data_toolkit.pipeline.boundary_fit import (
+        legacy_replay_state,
+        target_requires_legacy_replay,
+    )
+except ModuleNotFoundError as error:
+    if error.name != "data_toolkit":
+        raise
+    sys.path.insert(
+        0,
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")),
+    )
+    from data_toolkit.pipeline.boundary_fit import (
+        legacy_replay_state,
+        target_requires_legacy_replay,
+    )
 
 
 """=============== BLENDER ==============="""
@@ -417,20 +433,6 @@ def check_mask_boundary_distance(
     too_far = min_distance > min_boundary_distance
     
     return touches_boundary, too_far, min_distance
-
-
-def target_requires_legacy_replay(
-    fit_exhausted: bool,
-    touches_boundary: bool = False,
-    too_far: bool = False,
-) -> bool:
-    """Return whether target-resolution fitting must replay the legacy loop."""
-    return fit_exhausted or touches_boundary or too_far
-
-
-def legacy_replay_state(original_radius: float, max_retry: int) -> tuple:
-    """Reset radius and retry accounting to the full legacy retry budget."""
-    return original_radius, 0, max_retry
 
 
 def main(arg):
