@@ -1,3 +1,5 @@
+import ast
+from concurrent.futures import ThreadPoolExecutor
 import errno
 from hashlib import sha256
 from io import BytesIO
@@ -7,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tarfile
+import threading
 import time
 from types import SimpleNamespace
 from urllib.request import Request
@@ -29,6 +32,22 @@ def _native_hang_probe(marker):
     Path(marker).write_text(str(os.getpid()))
     time.sleep(10)
     return {"value": "late"}
+
+
+def _load_blender_script_function(name):
+    repository = Path(__file__).resolve().parents[2]
+    source = (
+        repository / "data_toolkit/blender_script/render_cond.py"
+    ).read_text()
+    module = ast.parse(source)
+    definition = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == name
+    )
+    namespace = {}
+    exec(compile(ast.Module([definition], []), source, "exec"), namespace)
+    return namespace[name]
 
 
 def test_checksum_verification(tmp_path):
@@ -458,6 +477,101 @@ def test_publish_fallback_restores_previous_output_on_second_rename_failure(
     assert (temporary / "value").read_text() == "new"
 
 
+def test_publish_fallback_recovers_after_publication_and_rollback_failures(
+    monkeypatch, tmp_path
+):
+    final = tmp_path / "asset"
+    temporary = tmp_path / ".asset.new"
+    final.mkdir()
+    temporary.mkdir()
+    (final / "value").write_text("old")
+    (temporary / "value").write_text("new")
+    real_replace = os.replace
+    calls = 0
+
+    def unsupported_exchange(_temporary, _final):
+        raise OSError(errno.EOPNOTSUPP, "exchange is unsupported")
+
+    def fail_publication_and_rollback(source, destination):
+        nonlocal calls
+        calls += 1
+        if calls in {2, 3}:
+            raise OSError(errno.EIO, "injected rename failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(render_cond, "_rename_exchange", unsupported_exchange)
+    monkeypatch.setattr(
+        render_cond.os,
+        "replace",
+        fail_publication_and_rollback,
+    )
+
+    with pytest.raises(RuntimeError, match="recoverable"):
+        render_cond._publish_render_output(temporary, final)
+
+    previous = final.with_name(".asset.previous")
+    assert not final.exists()
+    assert (previous / "value").read_text() == "old"
+    assert (temporary / "value").read_text() == "new"
+
+    monkeypatch.setattr(render_cond.os, "replace", real_replace)
+    with render_cond._publication_lock(final):
+        render_cond._recover_render_output(final)
+
+    assert (final / "value").read_text() == "old"
+    assert not previous.exists()
+
+
+def test_concurrent_publications_are_serialized(monkeypatch, tmp_path):
+    final = tmp_path / "asset"
+    final.mkdir()
+    (final / "value").write_text("old")
+    temporaries = []
+    for index in range(2):
+        temporary = tmp_path / f".asset.new-{index}"
+        temporary.mkdir()
+        (temporary / "value").write_text(f"new-{index}")
+        temporaries.append(temporary)
+
+    real_publish = render_cond._publish_render_output_unlocked
+    counter_lock = threading.Lock()
+    active = 0
+    maximum_active = 0
+
+    def tracked_publish(temporary, destination):
+        nonlocal active, maximum_active
+        with counter_lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+        try:
+            time.sleep(0.02)
+            real_publish(temporary, destination)
+        finally:
+            with counter_lock:
+                active -= 1
+
+    monkeypatch.setattr(
+        render_cond,
+        "_publish_render_output_unlocked",
+        tracked_publish,
+    )
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        list(
+            executor.map(
+                lambda temporary: render_cond._publish_render_output(
+                    temporary,
+                    final,
+                ),
+                temporaries,
+            )
+        )
+
+    assert maximum_active == 1
+    assert (final / "value").read_text() in {"new-0", "new-1"}
+    assert not any(temporary.exists() for temporary in temporaries)
+    assert not final.with_name(".asset.previous").exists()
+
+
 def test_render_main_passes_download_root_to_adapter(
     monkeypatch, tmp_path
 ):
@@ -777,16 +891,16 @@ def test_blender_script_selects_gpu_and_scales_boundary():
 
 
 def test_blender_script_replays_original_budget_after_target_disagreement():
-    repository = Path(__file__).resolve().parents[2]
-    source = (
-        repository / "data_toolkit/blender_script/render_cond.py"
-    ).read_text()
+    requires_replay = _load_blender_script_function(
+        "target_requires_legacy_replay"
+    )
+    replay_state = _load_blender_script_function("legacy_replay_state")
 
-    assert "fit_exhausted = retry_count >= max_retry" in source
-    assert "replay_legacy = touches_boundary or too_far" in source
-    assert "if replay_legacy:" in source
-    assert "final_retry_count = 0" in source
-    assert "while fallback_retries < max_retry:" in source
+    assert requires_replay(True) is True
+    assert requires_replay(False, touches_boundary=True) is True
+    assert requires_replay(False, too_far=True) is True
+    assert requires_replay(False, False, False) is False
+    assert replay_state(2.75, 10) == (2.75, 0, 10)
 
 
 def test_native_renderer_dependency_matches_production_blender_version():

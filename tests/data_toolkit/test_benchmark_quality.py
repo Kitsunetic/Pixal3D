@@ -83,3 +83,14 @@ def test_coordinate_and_latent_thresholds_are_hard_failures(tmp_path):
     assert report["passed"] is False
     assert any("coords" in failure for failure in report["failures"])
     assert any("relative L2" in failure for failure in report["failures"])
+
+
+def test_empty_or_missing_roots_fail_closed(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+
+    report = compare_benchmark_outputs(empty, tmp_path / "missing")
+
+    assert report["passed"] is False
+    assert any("no comparable artifacts" in item for item in report["failures"])
+    assert any("not a directory" in item for item in report["failures"])

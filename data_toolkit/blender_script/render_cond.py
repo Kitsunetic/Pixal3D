@@ -419,6 +419,20 @@ def check_mask_boundary_distance(
     return touches_boundary, too_far, min_distance
 
 
+def target_requires_legacy_replay(
+    fit_exhausted: bool,
+    touches_boundary: bool = False,
+    too_far: bool = False,
+) -> bool:
+    """Return whether target-resolution fitting must replay the legacy loop."""
+    return fit_exhausted or touches_boundary or too_far
+
+
+def legacy_replay_state(original_radius: float, max_retry: int) -> tuple:
+    """Reset radius and retry accounting to the full legacy retry budget."""
+    return original_radius, 0, max_retry
+
+
 def main(arg):
     if arg.seed is not None:
         np.random.seed(arg.seed)
@@ -545,7 +559,7 @@ def main(arg):
             bpy.context.scene.cycles.use_denoising = final_cycles_denoising
             bpy.context.scene.render.resolution_x = arg.cond_resolution
             bpy.context.scene.render.resolution_y = arg.cond_resolution
-            replay_legacy = fit_exhausted
+            replay_legacy = target_requires_legacy_replay(fit_exhausted)
             if not replay_legacy:
                 cam.location = (
                     current_radius * cam_dir[0],
@@ -559,15 +573,20 @@ def main(arg):
                     output_path,
                     min_boundary_distance=final_boundary_distance,
                 )
-                replay_legacy = touches_boundary or too_far
+                replay_legacy = target_requires_legacy_replay(
+                    fit_exhausted,
+                    touches_boundary,
+                    too_far,
+                )
             if replay_legacy:
                 # Any disagreement at target resolution discards the
                 # approximate fit. Replay the original full-resolution
                 # algorithm from its original radius and retry budget.
-                current_radius = view['radius']
-                final_retry_count = 0
+                current_radius, final_retry_count, fallback_retry_limit = (
+                    legacy_replay_state(view['radius'], max_retry)
+                )
                 fallback_retries = 0
-                while fallback_retries < max_retry:
+                while fallback_retries < fallback_retry_limit:
                     cam.location = (
                         current_radius * cam_dir[0],
                         current_radius * cam_dir[1],
@@ -588,7 +607,7 @@ def main(arg):
                         radius_increase_factor if touches_boundary
                         else radius_decrease_factor
                     )
-                if fallback_retries >= max_retry:
+                if fallback_retries >= fallback_retry_limit:
                     print(f'[WARNING] View {i}: Final-resolution fallback exhausted (dist={min_dist}px)')
             
         # Save camera parameters (with potentially updated radius)

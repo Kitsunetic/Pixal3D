@@ -131,9 +131,17 @@ def compare_benchmark_outputs(
     min_rgb_psnr: float = DEFAULT_MIN_SEEDED_RGB_PSNR,
     max_latent_relative_l2: float = DEFAULT_MAX_LATENT_RELATIVE_L2,
 ) -> dict[str, Any]:
+    failures: list[str] = []
+    if not reference_root.is_dir():
+        failures.append(f"reference root is not a directory: {reference_root}")
+    if not candidate_root.is_dir():
+        failures.append(f"candidate root is not a directory: {candidate_root}")
     reference_paths = _artifact_paths(reference_root)
     candidate_paths = _artifact_paths(candidate_root)
-    failures: list[str] = []
+    if not reference_paths:
+        failures.append("reference contains no comparable artifacts")
+    if not candidate_paths:
+        failures.append("candidate contains no comparable artifacts")
     if reference_paths != candidate_paths:
         missing = sorted(str(path) for path in reference_paths - candidate_paths)
         extra = sorted(str(path) for path in candidate_paths - reference_paths)

@@ -1,6 +1,9 @@
 import argparse
+from collections.abc import Iterator
+from contextlib import contextmanager
 import ctypes
 import errno
+import fcntl
 import importlib
 import json
 import math
@@ -301,6 +304,28 @@ def _cleanup_legacy_previous(final: Path) -> None:
         previous.unlink()
 
 
+@contextmanager
+def _publication_lock(final: Path) -> Iterator[None]:
+    lock_root = final.parent.parent / ".render-locks"
+    lock_root.mkdir(parents=True, exist_ok=True)
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(lock_root / f"{final.name}.lock", flags, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def _recover_render_output(final: Path) -> None:
+    previous = final.with_name(f".{final.name}.previous")
+    if not previous.exists():
+        return
+    if not final.exists():
+        os.replace(previous, final)
+
+
 def _rename_exchange(left: Path, right: Path) -> None:
     if RENAMEAT2 is None:
         raise OSError(errno.ENOSYS, "libc renameat2 is unavailable")
@@ -321,7 +346,7 @@ def _rename_exchange(left: Path, right: Path) -> None:
         )
 
 
-def _publish_render_output(temporary: Path, final: Path) -> None:
+def _publish_render_output_unlocked(temporary: Path, final: Path) -> None:
     if not final.exists():
         os.replace(temporary, final)
         return
@@ -343,11 +368,24 @@ def _publish_render_output(temporary: Path, final: Path) -> None:
         try:
             os.replace(temporary, final)
         except BaseException:
-            os.replace(previous, final)
+            try:
+                os.replace(previous, final)
+            except OSError as rollback_error:
+                raise RuntimeError(
+                    f"render publication failed; previous output is "
+                    f"recoverable at {previous}"
+                ) from rollback_error
             raise
         shutil.rmtree(previous)
     else:
         shutil.rmtree(temporary)
+
+
+def _publish_render_output(temporary: Path, final: Path) -> None:
+    with _publication_lock(final):
+        _recover_render_output(final)
+        _cleanup_legacy_previous(final)
+        _publish_render_output_unlocked(temporary, final)
 
 
 def _render_cond(
@@ -425,7 +463,6 @@ def _render_cond(
             temporary, config.num_views, config.resolution
         )
         _publish_render_output(temporary, final)
-        _cleanup_legacy_previous(final)
     finally:
         if temporary.exists():
             shutil.rmtree(temporary)
@@ -598,14 +635,18 @@ def main(argv: list[str] | None = None) -> None:
                 Path(opt.render_cond_root) / "renders_cond" / sha256
             )
             try:
-                _validate_render_output(
-                    final, render_config.num_views, render_config.resolution
-                )
+                with _publication_lock(final):
+                    _recover_render_output(final)
+                    _validate_render_output(
+                        final,
+                        render_config.num_views,
+                        render_config.resolution,
+                    )
+                    _cleanup_legacy_previous(final)
             except ValueError:
                 pass
             else:
                 records.append({"sha256": sha256, "cond_rendered": True})
-                _cleanup_legacy_previous(final)
             finally:
                 pbar.update()
         list(executor.map(check_sha256, metadata["sha256"].values))
