@@ -1,12 +1,14 @@
 import argparse
-from hashlib import sha256
 import os
-from pathlib import Path, PurePosixPath
 import re
 import shutil
 import stat
 import tempfile
 import zipfile
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
+from hashlib import sha256
+from pathlib import Path, PurePosixPath
 
 import pandas as pd
 
@@ -61,21 +63,38 @@ def _canonical_relative_path(value: str) -> PurePosixPath:
     return relative
 
 
-def _safe_regular_file(root: Path, relative: PurePosixPath) -> Path:
-    candidate = root.joinpath(*relative.parts)
-    current = root
-    for component in relative.parts:
-        current = current / component
-        if current.is_symlink():
-            raise ValueError(f"unsafe Objaverse symlink: {relative}")
+@contextmanager
+def _open_regular_file(root: Path, relative: PurePosixPath) -> Iterator[int]:
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    file_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    descriptors: list[int] = []
     try:
-        resolved = candidate.resolve(strict=True)
-        resolved.relative_to(root)
-    except (OSError, ValueError) as error:
+        current = os.open(root, directory_flags)
+        descriptors.append(current)
+        for component in relative.parts[:-1]:
+            current = os.open(component, directory_flags, dir_fd=current)
+            descriptors.append(current)
+        asset = os.open(relative.parts[-1], file_flags, dir_fd=current)
+        descriptors.append(asset)
+        if not stat.S_ISREG(os.fstat(asset).st_mode):
+            raise ValueError(f"Objaverse path is not a regular file: {relative}")
+        yield asset
+    except FileNotFoundError:
+        raise
+    except OSError as error:
         raise ValueError(f"unsafe Objaverse file: {relative}") from error
-    if not resolved.is_file():
-        raise ValueError(f"Objaverse path is not a regular file: {relative}")
-    return resolved
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
 
 
 def _split_archive_path(
@@ -117,25 +136,25 @@ def _selected_zip_member(
 
 def _asset_digest(root: Path, relative: PurePosixPath) -> str:
     archive_relative, member = _split_archive_path(relative)
-    path = _safe_regular_file(root, archive_relative)
     digest = sha256()
-    if member is None:
-        stream_context = path.open("rb")
-    else:
-        archive = zipfile.ZipFile(path, "r")
-        try:
+    with _open_regular_file(root, archive_relative) as descriptor, os.fdopen(
+        os.dup(descriptor), "rb"
+    ) as source:
+        if member is None:
+            stream = source
+            archive = None
+        else:
+            archive = zipfile.ZipFile(source, "r")
             info = _selected_zip_member(archive, member)
-            stream_context = archive.open(info, "r")
-        except BaseException:
-            archive.close()
-            raise
-    try:
-        with stream_context as stream:
+            stream = archive.open(info, "r")
+        try:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
-    finally:
-        if member is not None:
-            archive.close()
+        finally:
+            if stream is not source:
+                stream.close()
+            if archive is not None:
+                archive.close()
     return digest.hexdigest()
 
 
@@ -246,24 +265,37 @@ def _process_instance(args):
         asset_sha = metadatum['sha256']
         root = Path(output_dir).resolve()
         archive_relative, member = _split_archive_path(local_path)
-        archive_path = root.joinpath(*archive_relative.parts)
-        if member is not None and archive_path.exists():
-            archive_path = _safe_regular_file(root, archive_relative)
-            with tempfile.TemporaryDirectory() as tmp_dir:
-                with zipfile.ZipFile(archive_path, 'r') as zip_ref:
-                    info = _selected_zip_member(zip_ref, member)
-                    suffix = Path(member.name).suffix
-                    file = Path(tmp_dir) / f"asset{suffix}"
-                    with zip_ref.open(info, 'r') as source, file.open('xb') as target:
-                        shutil.copyfileobj(source, target, length=1024 * 1024)
+        with ExitStack() as stack:
+            try:
+                descriptor = stack.enter_context(
+                    _open_regular_file(root, archive_relative)
+                )
+            except FileNotFoundError:
+                # Later stages may need only the key and their prior output.
+                file = root.joinpath(*local_path.parts)
                 record = func(str(file), asset_sha)
-        elif archive_path.exists():
-            file = _safe_regular_file(root, archive_relative)
-            record = func(str(file), asset_sha)
-        else:
-            # Some later stages only need the asset key and their own prior output.
-            file = root.joinpath(*local_path.parts)
-            record = func(str(file), asset_sha)
+            else:
+                if member is not None:
+                    with tempfile.TemporaryDirectory() as tmp_dir:
+                        with os.fdopen(
+                            os.dup(descriptor), "rb"
+                        ) as source, zipfile.ZipFile(source, 'r') as zip_ref:
+                            info = _selected_zip_member(zip_ref, member)
+                            suffix = Path(member.name).suffix
+                            file = Path(tmp_dir) / f"asset{suffix}"
+                            with zip_ref.open(info, 'r') as packed, file.open(
+                                'xb'
+                            ) as target:
+                                shutil.copyfileobj(
+                                    packed, target, length=1024 * 1024
+                                )
+                        record = func(str(file), asset_sha)
+                else:
+                    with tempfile.TemporaryDirectory() as tmp_dir:
+                        suffix = Path(archive_relative.name).suffix
+                        file = Path(tmp_dir) / f"asset{suffix}"
+                        file.symlink_to(f"/proc/self/fd/{descriptor}")
+                        record = func(str(file), asset_sha)
         return record
     except Exception as e:
         print(f"Error processing object {metadatum.get('sha256', '?')}: {e}")

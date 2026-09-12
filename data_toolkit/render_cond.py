@@ -25,12 +25,14 @@ try:
     from data_toolkit.pipeline.blender import ensure_blender
     from data_toolkit.pipeline.camera import build_condition_views
     from data_toolkit.pipeline.config import RenderConfig
+    from data_toolkit.pipeline.inherited_fd import pass_fds_for_path
 except ModuleNotFoundError as error:
     if error.name != "data_toolkit":
         raise
     from pipeline.blender import ensure_blender
     from pipeline.camera import build_condition_views
     from pipeline.config import RenderConfig
+    from pipeline.inherited_fd import pass_fds_for_path
 
 
 DEFAULT_BLENDER_TOOL_ROOT = Path("/tmp")
@@ -324,8 +326,28 @@ def _publish_render_output(temporary: Path, final: Path) -> None:
         os.replace(temporary, final)
         return
 
-    _rename_exchange(temporary, final)
-    shutil.rmtree(temporary)
+    try:
+        _rename_exchange(temporary, final)
+    except OSError as error:
+        unsupported = {
+            errno.ENOSYS,
+            errno.EINVAL,
+            errno.EOPNOTSUPP,
+            getattr(errno, "ENOTSUP", errno.EOPNOTSUPP),
+        }
+        if error.errno not in unsupported:
+            raise
+        previous = final.with_name(f".{final.name}.previous")
+        _cleanup_legacy_previous(final)
+        os.replace(final, previous)
+        try:
+            os.replace(temporary, final)
+        except BaseException:
+            os.replace(previous, final)
+            raise
+        shutil.rmtree(previous)
+    else:
+        shutil.rmtree(temporary)
 
 
 def _render_cond(
@@ -395,6 +417,7 @@ def _render_cond(
                 stderr=subprocess.DEVNULL,
                 check=True,
                 timeout=timeout_seconds,
+                pass_fds=pass_fds_for_path(file_path),
             )
         else:
             raise ValueError(f"unknown renderer mode: {renderer_mode}")

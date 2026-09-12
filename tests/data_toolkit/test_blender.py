@@ -1,3 +1,4 @@
+import errno
 from hashlib import sha256
 from io import BytesIO
 import json
@@ -401,6 +402,60 @@ def test_exchange_failure_keeps_existing_output_and_cleans_temporary(
 
     assert (final / "stale").read_text() == "old"
     assert sorted(path.name for path in final.parent.iterdir()) == [sha]
+
+
+def test_publish_falls_back_when_filesystem_does_not_support_exchange(
+    monkeypatch, tmp_path
+):
+    final = tmp_path / "asset"
+    temporary = tmp_path / ".asset.new"
+    final.mkdir()
+    temporary.mkdir()
+    (final / "value").write_text("old")
+    (temporary / "value").write_text("new")
+
+    def unsupported_exchange(_temporary, _final):
+        raise OSError(errno.EOPNOTSUPP, "exchange is unsupported")
+
+    monkeypatch.setattr(render_cond, "_rename_exchange", unsupported_exchange)
+
+    render_cond._publish_render_output(temporary, final)
+
+    assert (final / "value").read_text() == "new"
+    assert not temporary.exists()
+    assert not final.with_name(".asset.previous").exists()
+
+
+def test_publish_fallback_restores_previous_output_on_second_rename_failure(
+    monkeypatch, tmp_path
+):
+    final = tmp_path / "asset"
+    temporary = tmp_path / ".asset.new"
+    final.mkdir()
+    temporary.mkdir()
+    (final / "value").write_text("old")
+    (temporary / "value").write_text("new")
+    real_replace = os.replace
+    calls = 0
+
+    def unsupported_exchange(_temporary, _final):
+        raise OSError(errno.EOPNOTSUPP, "exchange is unsupported")
+
+    def fail_second_replace(source, destination):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError(errno.EIO, "publication failed")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(render_cond, "_rename_exchange", unsupported_exchange)
+    monkeypatch.setattr(render_cond.os, "replace", fail_second_replace)
+
+    with pytest.raises(OSError, match="publication failed"):
+        render_cond._publish_render_output(temporary, final)
+
+    assert (final / "value").read_text() == "old"
+    assert (temporary / "value").read_text() == "new"
 
 
 def test_render_main_passes_download_root_to_adapter(

@@ -485,6 +485,33 @@ def test_objaverse_instance_streams_only_selected_regular_zip_member(tmp_path):
     assert result == (b"selected", "a" * 64)
 
 
+def test_objaverse_instance_pins_direct_file_before_callback(tmp_path):
+    module = importlib.import_module("data_toolkit.datasets.ObjaverseXL")
+    local = tmp_path / "raw/objects/object.glb"
+    replacement = tmp_path / "replacement.glb"
+    local.parent.mkdir(parents=True)
+    local.write_bytes(b"verified")
+    replacement.write_bytes(b"replacement")
+
+    def replace_then_read(path, _digest):
+        local.unlink()
+        local.symlink_to(replacement)
+        return Path(path).read_bytes()
+
+    result = module._process_instance(
+        (
+            {
+                "sha256": "a" * 64,
+                "local_path": "raw/objects/object.glb",
+            },
+            str(tmp_path),
+            replace_then_read,
+        )
+    )
+
+    assert result == b"verified"
+
+
 @pytest.mark.parametrize("mode", ["outside", "symlink", "digest"])
 def test_objaverse_download_rejects_unverified_dependency_paths(
     monkeypatch, tmp_path, mode

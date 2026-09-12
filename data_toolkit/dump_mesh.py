@@ -11,6 +11,11 @@ from easydict import EasyDict as edict
 from functools import partial
 import tempfile
 
+if __package__:
+    from .pipeline.inherited_fd import pass_fds_for_path
+else:
+    from pipeline.inherited_fd import pass_fds_for_path
+
 
 BLENDER_LINK = 'https://ftp.halifax.rwth-aachen.de/blender/release/Blender4.5/blender-4.5.1-linux-x64.tar.xz'
 BLENDER_INSTALLATION_PATH = '/tmp'
@@ -109,6 +114,7 @@ def _dump_mesh(
             stderr=subprocess.DEVNULL,
             timeout=timeout_seconds,
             check=False,
+            pass_fds=pass_fds_for_path(file_path),
         )
 
         try:
