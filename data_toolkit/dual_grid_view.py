@@ -225,7 +225,7 @@ def _terminate_process(process):
         process.join(0.5)
         if process.is_alive():
             _pidfd_send_signal(pidfd, signal.SIGKILL)
-            process.join(0.5)
+            process.join(5.0)
     finally:
         os.close(pidfd)
     if process.is_alive():

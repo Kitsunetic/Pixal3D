@@ -711,6 +711,11 @@ def test_voxel_adapter_timeout_uses_bounded_direct_pidfd_cleanup(
 
         def join(self, timeout):
             self.joins.append(timeout)
+            if timeout == 5.0 and any(
+                sent_signal == signal.SIGKILL
+                for _, sent_signal in sent
+            ):
+                self.alive = False
 
         def is_alive(self):
             return self.alive
@@ -720,8 +725,6 @@ def test_voxel_adapter_timeout_uses_bounded_direct_pidfd_cleanup(
 
     def send_signal(pidfd, sent_signal, siginfo=None, flags=0):
         sent.append((pidfd, sent_signal))
-        if sent_signal == signal.SIGKILL:
-            process.alive = False
 
     monkeypatch.setattr(worker, "_pidfd_send_signal", send_signal)
     monkeypatch.setattr(worker.os, "close", closed.append)
@@ -729,7 +732,7 @@ def test_voxel_adapter_timeout_uses_bounded_direct_pidfd_cleanup(
     worker._terminate_process(process)
 
     assert sent == [(81, signal.SIGTERM), (81, signal.SIGKILL)]
-    assert process.joins == [0.5, 0.5]
+    assert process.joins == [0.5, 5.0]
     assert closed == [81]
 
 
