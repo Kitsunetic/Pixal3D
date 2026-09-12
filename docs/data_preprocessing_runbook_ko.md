@@ -433,8 +433,13 @@ TESTED_CODE_COMMIT=c1002e990a74187f5b01f2290238f7a4eb698262
 PIXAL3D_FAST_IMAGE=pixal3d-fast:c1002e9
 
 set -euo pipefail
-test ! -e "$SOURCE_ROOT"
-git clone https://github.com/Kitsunetic/Pixal3D.git "$SOURCE_ROOT"
+if [ ! -e "$SOURCE_ROOT" ]; then
+  git clone --no-checkout https://github.com/Kitsunetic/Pixal3D.git "$SOURCE_ROOT"
+else
+  test -d "$SOURCE_ROOT/.git"
+  test -z "$(git -C "$SOURCE_ROOT" status --porcelain=v1 --untracked-files=all)"
+fi
+git -C "$SOURCE_ROOT" fetch origin "$TESTED_CODE_COMMIT"
 git -C "$SOURCE_ROOT" checkout --detach "$TESTED_CODE_COMMIT"
 test "$(git -C "$SOURCE_ROOT" rev-parse HEAD)" = "$TESTED_CODE_COMMIT"
 test -z "$(git -C "$SOURCE_ROOT" status --porcelain=v1 --untracked-files=all)"
