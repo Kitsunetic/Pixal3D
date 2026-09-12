@@ -1,8 +1,11 @@
 Command:
-/home/rvi/conda/envs/torch/bin/python -m pytest -q --basetemp=.pytest-release-final2-20260913
+TMPDIR=$PWD/.pytest-tmp /home/rvi/conda/envs/torch/bin/python -m pytest -q
+
+Runtime code commit:
+81425bacedfa5411eb96eb6c65f5b9a0fafb5527
 
 Result:
-900 passed, 1 warning in 131.32s (0:02:11)
+903 passed, 1 warning in 131.00s (0:02:10)
 
 Warning:
 tests/data_toolkit/test_view_transform_alignment.py::test_pbr_transform_matches_geometry_transform_and_quantized_support

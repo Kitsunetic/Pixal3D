@@ -1,0 +1,84 @@
+{
+  "host": "n7",
+  "benchmark_root": "/file3/youngwoo/pixal3d-native-renderer-benchmark-20260912",
+  "assets_10_sha256": "dd59807f987e3e1cf9c2b407a5eaf3b99d7fe38f813a88c66bc6a5287d53b59e",
+  "assets_100_sha256": "2b1181c70fa7de6fc6270133b8d3d180ed43d15702968d8c18de4a70b4dccce2",
+  "runs": [
+    {
+      "name": "external-optix-fullres-10",
+      "assets": 10,
+      "process_topology": "one Blender subprocess per asset on one GPU",
+      "final_backend": "OPTIX",
+      "boundary_fit": "Cycles at target resolution",
+      "wall_seconds": 898,
+      "exit_code": 0,
+      "source_log": "external-optix-fullres-10.log",
+      "source_log_sha256": "b542409cee23a79b03af846304c3b0fedd8404e3c74e413cefcf1e1ff956abe0"
+    },
+    {
+      "name": "native-optix-eevee128-batch8-v2-10",
+      "assets": 10,
+      "process_topology": "one long-lived native bpy worker on one GPU; recycle after eight assets",
+      "final_backend": "OPTIX",
+      "boundary_fit": "EEVEE_NEXT at 128 px and one sample",
+      "wall_seconds": 184,
+      "exit_code": 0,
+      "source_log": "native-optix-eevee128-batch8-v2-10.log",
+      "source_log_sha256": "c87909786fff9daf5b2181587b6484ece3e4b17d091b73f51921f5e2ac938211"
+    },
+    {
+      "name": "reference-native-optix-fullres-100",
+      "assets": 100,
+      "process_topology": "six ranks on six GPUs",
+      "final_backend": "OPTIX",
+      "boundary_fit": "Cycles at target resolution",
+      "rank_wall_seconds": [765, 576, 717, 648, 640, 633],
+      "wall_seconds": 765,
+      "exit_codes": [0, 0, 0, 0, 0, 0],
+      "source_logs_sha256": [
+        "f62a6013be24cdc607b40f764a43658f0db91ba6a3fd791ad4a418bd61ba1bda",
+        "9d13ff2c2ca75175e817ce5f3bc3c5dad06085b7df77693aeeaf843ad031a860",
+        "2a25359f49667479e4784b1c4c44d5764f473d01eaf43b1e850fe76016ddedb9",
+        "0685ce89428b9708ff4b0d20c0a1c97786fb7980bc9dc345182fb4052e8c6296",
+        "faf48ef2ab7e40f5ba22aa2a6e39dd3359a220ebcfa12c78827ce9f4d9599b37",
+        "8a313531b8abed9f59f1577264dc7a61d6fb2fbd11fe94f558c997de1bc0165a"
+      ]
+    },
+    {
+      "name": "candidate-native-optix-eevee128-isolated-v2-100",
+      "assets": 100,
+      "process_topology": "six one-visible-GPU containers; one rank each; recycle after eight assets",
+      "final_backend": "OPTIX",
+      "boundary_fit": "EEVEE_NEXT at 128 px and one sample",
+      "rank_wall_seconds": [396, 346, 424, 332, 348, 364],
+      "wall_seconds": 424,
+      "exit_codes": [0, 0, 0, 0, 0, 0],
+      "source_logs_sha256": [
+        "fed6867a53f20ddf7a567d10fcc104f32a26921037c93a6bb94246a320a1d282",
+        "52018e194763578f4f2d33d8b7257f86afac97f931630efabc1cedcbaf41e708",
+        "61ada3982ce8033424b8718d0729d07c59f418a81ee31b498ff6a76282bfa6f7",
+        "0e63f597edfb55c1c2dad03b5646a15ed3281d81b93cf3d56f77c5a190b8846a",
+        "57052b890ba10c9b81a8e391b08ca7c9aa8e2544181603d5acb0ed7f7662148c",
+        "6a715119aa0e54c93e621386c916ce85a8fa5d3392a8b3c27fe49f52881267e7"
+      ]
+    },
+    {
+      "name": "candidate-native-cuda-eevee128-isolated-100",
+      "assets": 100,
+      "process_topology": "six one-visible-GPU containers; one rank each; recycle after eight assets",
+      "final_backend": "CUDA",
+      "boundary_fit": "EEVEE_NEXT at 128 px and one sample",
+      "rank_wall_seconds": [352, 274, 357, 280, 292, 310],
+      "wall_seconds": 357,
+      "exit_codes": [0, 0, 0, 0, 0, 0],
+      "source_logs_sha256": [
+        "0eb56a5f76c471c39344ac444d7275e1323de98e3f0e4968973332b76c11f9e8",
+        "f2c8554c0876b76eff8428aee37bed5f3698ae4a7efa1523e237a338a85d856a",
+        "45e39515b4476b6c0c71b41e29429c51e4ef8f8039f0ff23f165c27de3fcf1f5",
+        "2242dee19fe2af3c9c7808a05c3c73aa9c3e3fc8e8e5f5539dfae75caa8099c9",
+        "df2489f7ef841d7db719bbcb9426771fa8253c14db0924f0f10a02dcc3cadf41",
+        "4d7f8882eeb1f7b2fb43ef6efc3cbc598b925f8b84ca638ce81b28f0ac855a60"
+      ]
+    }
+  ]
+}

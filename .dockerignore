@@ -1,0 +1,5 @@
+.git
+.omo
+.pytest*
+**/__pycache__
+autoresearch-results

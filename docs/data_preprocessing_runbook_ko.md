@@ -427,23 +427,37 @@ container 내부 등록 GPU는 항상 ordinal `0`이다. 예를 들어 n7의 물
 나눠 전체 합이 44를 넘지 않게 한다.
 
 ```bash
-# host에서 GPU N마다 한 번 실행한다. 아래 commit은 최종 suite를 통과한 code tree다.
+# host에서 한 번, 검증된 runtime tree를 불변 image에 복사한다.
+SOURCE_ROOT=/file3/youngwoo/pixal3d-n7-runtime/source
+TESTED_CODE_COMMIT=81425bacedfa5411eb96eb6c65f5b9a0fafb5527
+PIXAL3D_FAST_IMAGE=pixal3d-fast:81425ba
+
+set -euo pipefail
+test "$(git -C "$SOURCE_ROOT" rev-parse HEAD:data_toolkit)" = \
+  "$(git -C "$SOURCE_ROOT" rev-parse "$TESTED_CODE_COMMIT:data_toolkit")"
+git -C "$SOURCE_ROOT" diff --quiet -- data_toolkit
+docker build \
+  --build-arg BASE_IMAGE=f1.unist.info:443/jhenv6:cu128-260813 \
+  --build-arg PIXAL3D_RUNTIME_COMMIT="$TESTED_CODE_COMMIT" \
+  -f "$SOURCE_ROOT/docker/production-fast-overlay.Dockerfile" \
+  -t "$PIXAL3D_FAST_IMAGE" "$SOURCE_ROOT"
+
+# 이어서 host에서 GPU N마다 한 번 실행한다.
 N=0
 NODE_ID="node7-gpu${N}"
 CPU_LIMIT=8
-TESTED_CODE_COMMIT=04f7e60dced5392df7aa2c2f626cc55cdceb987d
 
 docker run -d --name "youngwoo_diyscene_fast_${NODE_ID}" \
   --gpus "device=${N}" \
-  -v /file3/youngwoo/pixal3d-n7-runtime/source:/root/dev/Pixal3D-fast:ro \
   -v /file2/youngwoo/pixal3d:/root/data2/pixal3d \
   -v /file3/youngwoo/pixal3d:/root/data3/pixal3d \
   -v "/file3/youngwoo/pixal3d-n7-runtime/local/gpu${N}:/root/node7/data/pixal3d" \
-  f1.unist.info:443/jhenv6:cu128-260813 sleep infinity
+  "$PIXAL3D_FAST_IMAGE" sleep infinity
 
 docker exec "youngwoo_diyscene_fast_${NODE_ID}" bash -lc "
+  set -euo pipefail
   cd /root/dev/Pixal3D-fast
-  git merge-base --is-ancestor \"${TESTED_CODE_COMMIT}\" HEAD
+  test \"\$(cat .pixal3d-runtime-commit)\" = \"${TESTED_CODE_COMMIT}\"
   source /home/rvi/conda/etc/profile.d/conda.sh
   conda activate pixal3d
   CONFIG=data_toolkit/configs/multiview_preprocess.yaml
@@ -459,6 +473,11 @@ docker exec "youngwoo_diyscene_fast_${NODE_ID}" bash -lc "
     --node-id \"${NODE_ID}\"
 "
 ```
+
+runtime source는 image layer에 들어가며 host source bind를 사용하지 않는다. 따라서 preflight
+이후 host checkout이 바뀌어도 실행 중 container 코드는 변하지 않는다. build 전 검사는
+`data_toolkit` tree가 최종 903-test suite를 통과한 commit과 정확히 같은지 확인하며, 실패하면
+`set -e`로 image 생성 전에 중단한다.
 
 GPU 1--5도 `N`, `NODE_ID`, `CPU_LIMIT`만 바꿔 반복한다. 동일 node-id 또는 동일 local
 root를 두 container에 사용하면 worker lock 또는 scratch 충돌이 발생하므로 금지한다.

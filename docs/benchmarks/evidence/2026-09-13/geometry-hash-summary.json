@@ -1,0 +1,23 @@
+{
+  "host": "n7",
+  "benchmark_root": "/file3/youngwoo/pixal3d-native-renderer-benchmark-20260912",
+  "assets_sha256": "2b1181c70fa7de6fc6270133b8d3d180ed43d15702968d8c18de4a70b4dccce2",
+  "shape_and_scale": {
+    "files": 1200,
+    "reference_manifest": "geometry-reference-hashes.txt",
+    "candidate_manifest": "geometry-candidate-hashes.txt",
+    "reference_manifest_sha256": "f79901a27a799a0ae0d2d7b50870840407e81095ccef77b70371682b146dbf15",
+    "candidate_manifest_sha256": "f79901a27a799a0ae0d2d7b50870840407e81095ccef77b70371682b146dbf15",
+    "byte_exact": true
+  },
+  "pbr_and_scale": {
+    "files": 1020,
+    "reference_manifest": "geometry-reference-pbr-hashes.txt",
+    "candidate_manifest": "geometry-candidate-pbr-hashes.txt",
+    "reference_manifest_sha256": "dfe9df954b2fef0432a5136c961c176714e9d4c53f0a71e86b1aab13ddd938e0",
+    "candidate_manifest_sha256": "dfe9df954b2fef0432a5136c961c176714e9d4c53f0a71e86b1aab13ddd938e0",
+    "byte_exact": true
+  },
+  "total_files": 2220,
+  "all_byte_exact": true
+}

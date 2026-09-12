@@ -16,10 +16,12 @@ E2E 범위에는 포함되지 않았다.
 test suite는 892 passed였다. 이후 NFS fallback, descriptor-pinned Objaverse input과
 reproducible comparator까지 포함한 최종 suite는 900 passed였다. 이 보강은 정상 산출물
 계산 알고리즘을 바꾸지 않는다.
-최종 suite가 검증한 code tree는
-`04f7e60dced5392df7aa2c2f626cc55cdceb987d`이다. 저해상도 fitting과 최초 target
+최종 suite가 검증한 runtime code tree는
+`81425bacedfa5411eb96eb6c65f5b9a0fafb5527`이다. 저해상도 fitting과 최초 target
 resolution 검증이 불일치하면 원래 radius와 10회 budget으로 legacy full-resolution
-loop를 완전히 재실행하므로 unseen mesh에서도 fallback 의미를 보존한다.
+loop를 완전히 재실행한다. 이 동작은 source-string 검사가 아니라 replay 조건과 초기화
+상태를 실행하는 regression test로 고정했다. comparator는 입력 root가 없거나 비교 가능한
+artifact가 0개이면 실패하도록 fail-closed로 보강했다.
 
 ## 성능 결과
 
@@ -32,6 +34,10 @@ benchmark 결과는 다음과 같다.
 | 100 assets, 6 GPU, native full-resolution OPTIX | 765초 (7.65초/asset) | 424초 (4.24초/asset) | 1.80배 |
 | 100 assets, final Cycles backend | OPTIX 424초 | CUDA 357초 | CUDA 15.8% 단축 |
 | latent 전체, 6 GPU | 587초 후 OOM, 5개는 별도 49초 재개 | 177초, OOM 없음 | cache/restart 조건이 다른 진단값 |
+
+각 clean renderer run의 topology, backend, boundary-fit 설정, rank별 wall time, exit code와
+원본 log SHA-256은 `benchmark-timings.json`에 기록했다. 100개 수치는 여섯 rank 중 가장
+늦게 끝난 wall time이며, 서로 동일한 100-asset manifest를 사용했다.
 
 production 기본 backend는 출력 연속성을 위해 OPTIX로 유지한다. CUDA는 더 빠르지만
 800개 frame 중 alpha byte-exact 439개, binary mask exact 766개, 최저 mask IoU
@@ -58,7 +64,9 @@ schema/membership이다. 동일 seed를 주는 별도 evaluation에서는 view�
 요구한다. latent acceptance는 exact schema/shape/dtype/coordinate와 family별 relative L2
 0.2% 이하이다.
 
-geometry 재사용 변경은 2,220개 VXZ/scale 파일이 모두 byte-exact였다. latent는 2,620개
+geometry 재사용 변경은 2,220개 VXZ/scale 파일이 모두 byte-exact였다. reference/candidate
+hash manifest는 각각 동일한 SHA-256을 가지며 파일 수와 digest는
+`geometry-hash-summary.json`에 고정했다. latent는 2,620개
 파일에서 schema, shape, dtype, sparse coordinate가 exact였고, 최대 relative L2 오차는
 shape 0.0420%, SS 0.0769%, PBR 0.1417%였다.
 
@@ -99,6 +107,21 @@ production에서는 GPU 하나만 노출한 container를 GPU당 하나씩 실행
 내부에서는 보이는 GPU가 ordinal 0이다. input dataset은 read-only, scratch와 output은
 container별로 분리하고, 검증 뒤에만 canonical output을 연결한다.
 
+## 운영 threat model과 장애 복구
+
+신뢰 경계 안에는 고정된 container image/runtime, worker가 소유한 scratch/output, read-only
+dataset mount가 있다. archive member 경로, asset metadata/content는 digest와 경로 검사를
+통과하기 전까지 신뢰하지 않는다. 같은 Unix uid 또는 host root가 의도적으로 파일을 바꾸는
+공격과 손상된 kernel/filesystem은 범위 밖이다.
+
+Objaverse input은 `openat(..., O_NOFOLLOW)`로 연 뒤 검증된 descriptor를 Blender child까지
+상속하므로 검증 직후 경로가 symlink로 바뀌어도 다른 inode를 읽지 않는다. archive member는
+절대 경로와 traversal을 거부한다. render publication은 asset별 `flock`으로 직렬화한다.
+NFS가 atomic exchange를 지원하지 않으면 기존 output을 `.previous`에 보존하고 새 output을
+게시한다. 게시와 rollback이 모두 실패해도 `.previous`를 삭제하지 않으며, 다음 resume/filter가
+잠금을 획득한 뒤 final이 없을 때 이를 복원하고 검증한다. final과 previous가 함께 있으면 final
+검증 성공 후에만 previous를 정리한다.
+
 ## 재현 가능한 품질 검사
 
 검증 manifest, qualification config, 비교 report 및 test log는 이 문서 옆의
@@ -119,6 +142,7 @@ coordinates와 latent relative-L2 threshold를 hard gate로 검사하고 RGB 분
 alpha IoU 1.0으로 통과했고, latent 1,310 NPZ도 failure 0, 최대 relative L2
 0.1417104%로 0.2% 기준을 통과했다. exact command와 machine-readable 결과는
 `quality-comparator-result.json`과 `latent-comparator-result.json`에 있다.
+빈 root와 누락된 root가 성공으로 판정되지 않는 regression도 최종 903-test suite에 포함한다.
 
 ## 보존된 증거
 

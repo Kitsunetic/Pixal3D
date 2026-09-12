@@ -2016,3 +2016,18 @@ resolution 검증이 한 번이라도 실패하면 저해상도 radius를 버리
 full-resolution 10회 loop를 그대로 재실행하도록 수정했다. 기존 100-asset exact-camera
 경로는 최초 target 검증을 통과하므로 추가 연산이 없고, 불일치 mesh만 보수적 fallback을
 사용한다. 이 수정까지 포함한 전체 suite는 900 passed, warning 1개였다.
+
+최종 handoff review에서 추가로 세 가지 fail-closed 조건을 보강했다. comparator는 reference나
+candidate root가 없거나 comparable artifact가 0개이면 즉시 실패한다. NFS render publication은
+asset별 `flock`으로 직렬화하고, 새 output 게시와 기존 output rollback이 모두 실패한 경우에도
+`.previous`를 남겨 다음 resume에서 복구한다. target-resolution disagreement fallback은 문자열
+검사가 아니라 replay 조건과 원래 radius/10회 budget 초기화 함수를 실행하는 regression으로
+검증한다. 관련 전체 suite는 runtime commit
+`81425bacedfa5411eb96eb6c65f5b9a0fafb5527`에서 903 passed, warning 1개였다.
+
+성능 수치의 원본 log digest와 rank별 wall time을 `benchmark-timings.json`에, geometry 2,220개
+파일의 reference/candidate hash-manifest digest를 `geometry-hash-summary.json`에 기록했다.
+운영 container는 mutable host source bind 대신 검증된 runtime tree를 COPY한 overlay image를
+사용하도록 runbook을 바꿨다. image 내부 commit marker를 supervisor 시작 전에 exact 비교하며,
+host checkout이 이후 바뀌어도 실행 중 코드는 변하지 않는다. 신뢰 경계, descriptor-pinned input,
+archive path 검증, NFS rollback/recovery 동작도 qualification 문서에 명시했다.
