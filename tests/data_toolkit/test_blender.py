@@ -983,7 +983,11 @@ def test_native_renderer_dependency_matches_production_blender_version():
         repository / "data_toolkit/requirements-native-renderer.txt"
     ).read_text()
 
-    assert "bpy==4.5.1" in requirements.splitlines()
+    assert (
+        "bpy==4.5.1 "
+        "--hash=sha256:"
+        "f8cd41c8f8f13e4aa77a7eb0ba4d95d2b8bcc3241ae72acdff3bc6d2558b9e3c"
+    ) in requirements.splitlines()
 
 
 def test_render_command_top_level_help_does_not_import_a_dataset_adapter(
