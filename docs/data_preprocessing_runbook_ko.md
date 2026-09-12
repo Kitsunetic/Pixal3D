@@ -450,7 +450,8 @@ docker exec "youngwoo_diyscene_fast_${NODE_ID}" bash -lc "
   export PIXAL3D_NATIVE_WORKER_MAX_ASSETS=8
   export PIXAL3D_GPU_INDICES=0
   python -m data_toolkit.pipeline.cli workers --config \"\$CONFIG\" \\
-    --action register --node-id \"${NODE_ID}\" --cpu-limit \"${CPU_LIMIT}\" \\
+    --action register --node-id \"${NODE_ID}\" --ssh-target n7 \\
+    --cpu-limit \"${CPU_LIMIT}\" \\
     --gpus 0 --data2-root /root/data2/pixal3d \\
     --data3-root /root/data3/pixal3d --local-root /root/node7/data/pixal3d
   exec python -m data_toolkit.pipeline.cli supervisor --config \"\$CONFIG\" \\
