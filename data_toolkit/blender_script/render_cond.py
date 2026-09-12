@@ -462,6 +462,8 @@ def main(arg):
         "selected_devices": selected_devices,
         "frames": []
     }
+    if arg.seed is not None:
+        to_export["render_seed"] = arg.seed
     views = json.loads(arg.cond_views)
     
     # Parameters for boundary check and radius adjustment
