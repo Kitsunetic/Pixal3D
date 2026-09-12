@@ -1964,7 +1964,7 @@ installer fixture 3건이 permission error를 냈으며 같은 테스트를 exec
 모두 통과했다. 실험 종료 후 n7의 benchmark 전용 container 7개는 중지했으며 production
 `youngwoo_diyscene_fast_n7`과 n17의 coworker `youngwoo_diyscene`은 수정하거나 재시작하지 않았다.
 
-## 2026-09-13 — 격리된 100-asset production E2E qualification
+## 2026-09-13 — 격리된 100-asset ObjaverseXL production-path qualification
 
 exact code snapshot `a9114d82588e019e529204affdc97f08d46ca47f`를 n7의 완전히 분리된
 input/output/scratch에 배포하고, 실제 Objaverse GLB 100개를 6개 one-GPU container로 나눠
@@ -1979,8 +1979,10 @@ frozen full-resolution OPTIX 기준과 exact snapshot의 100 assets/800 views를
 set, retry, camera matrix/radius/angle, AABB, scale/offset 및 alpha 800/800이 exact임을 확인했다.
 unseeded lighting 때문에 독립 run RGB PSNR은 hard gate로 사용하지 않았고, camera/alpha와
 artifact schema/membership을 production gate로 유지했다. 별도의 clean benchmark에서는
-renderer가 10 assets 기준 898초에서 184초로 4.88배, 100 assets/6 GPU 기준 765초에서
-424초로 1.80배 빨라졌다. latent는 587초(+OOM 재개 49초)에서 177초로 단축됐고 OOM이 없었다.
+renderer 전체 경로가 10 assets 기준 898초에서 184초로 4.88배, 100 assets/6 GPU 기준
+765초에서 424초로 1.80배 빨라졌다. latent 기준의 587초 run은 model cache download와
+OOM 뒤 별도 49초 재개를 포함하므로, 177초 수정 run과의 비율은 진단값일 뿐 clean speedup
+판정으로 사용하지 않는다.
 
 E2E 도중 다른 사용자가 GPU 0--3에서 학습을 시작해 해당 GPU의 세 qualification container만
 중지하고 빈 GPU 4/5에서 checkpoint resume했다. 세 shard 모두 완료됐고 이미 완료된 shard의
@@ -1993,3 +1995,17 @@ delayed-reap regression을 추가했다(`756f5d1`). 수정 후 전체 suite는 8
 canonical production은 completed 152, pending 604, running 0, failed 0으로 그대로이며,
 qualification container 9개는 제거했다. 상세 수치와 증거 경로는
 `docs/benchmarks/2026-09-13-preprocessing-qualification.md`에 기록했다.
+
+최종 review에서 native 배포 runbook의 multi-GPU 등록 예시가 one-visible-GPU 계약과
+충돌하는 것을 발견해, GPU마다 고유 container/node-id/local-root를 사용하는 6-worker
+예시로 수정했다. `RENAME_EXCHANGE`를 지원하지 않는 NFS에는 previous-output rollback
+fallback을 추가했고, Objaverse direct input은 descriptor-relative `O_NOFOLLOW`로 열어
+고정한 inode를 private alias와 inherited FD로 Blender에 전달하도록 보강했다. 같은 경로가
+검증 직후 symlink로 교체되어도 원래 inode를 읽는 회귀 테스트를 포함한다.
+
+`data_toolkit.benchmark_quality`에는 unseeded RGB diagnostic와 seeded 50 dB gate, exact
+alpha/camera/coordinate, latent relative L2 0.2% gate를 구현했다. frozen 800 PNG 비교는
+failure 0/alpha IoU 1.0, frozen 1,310 latent NPZ 비교는 failure 0/max relative L2
+0.1417104%로 통과했다. qualification config, 100개 asset list, 비교 report, evidence hash,
+test log를 저장소에 포함했다. 전체 suite 최종 결과는 900 passed, 기존 `torch.cross`
+deprecation warning 1개였다.

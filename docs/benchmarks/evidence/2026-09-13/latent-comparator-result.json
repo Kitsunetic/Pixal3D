@@ -1,0 +1,14 @@
+{
+  "command": "python -m data_toolkit.benchmark_quality latent-reference latent-candidate --rgb-policy diagnostic --max-latent-relative-l2 0.002",
+  "result": {
+    "compared_npz": 1310,
+    "compared_png": 0,
+    "compared_vxz": 0,
+    "failures": [],
+    "max_latent_relative_l2": 0.0014171041262951462,
+    "min_alpha_iou": 1.0,
+    "min_rgb_psnr": "Infinity",
+    "passed": true,
+    "rgb_policy": "diagnostic"
+  }
+}

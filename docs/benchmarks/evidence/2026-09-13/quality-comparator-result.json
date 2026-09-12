@@ -1,0 +1,14 @@
+{
+  "command": "python -m data_toolkit.benchmark_quality render-reference-native-optix-fullres/renders_cond render-candidate-native-optix-eevee128-isolated-v2/renders_cond --rgb-policy diagnostic",
+  "result": {
+    "compared_npz": 0,
+    "compared_png": 800,
+    "compared_vxz": 0,
+    "failures": [],
+    "max_latent_relative_l2": 0.0,
+    "min_alpha_iou": 1.0,
+    "min_rgb_psnr": 24.80914273662188,
+    "passed": true,
+    "rgb_policy": "diagnostic"
+  }
+}

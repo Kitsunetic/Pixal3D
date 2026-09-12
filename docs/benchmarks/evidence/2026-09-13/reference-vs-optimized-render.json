@@ -1,0 +1,26 @@
+{
+  "alpha_exact_frames": 800,
+  "alpha_iou": {"min": 1.0, "p50": 1.0, "p95": 1.0, "p99": 1.0},
+  "asset_sets_exact": true,
+  "candidate_assets": 100,
+  "common_assets": 100,
+  "file_paths_exact": true,
+  "frames": 800,
+  "reference_assets": 100,
+  "retries_exact": true,
+  "rgb_psnr_db": {
+    "min": 24.809142736621883,
+    "p50": 44.84846164367743,
+    "p95": 55.08785341801333,
+    "p99": 60.25070019197435
+  },
+  "transform_max_absolute_delta": {
+    "aabb": 0.0,
+    "camera_angle_x": 0.0,
+    "offset": 0.0,
+    "original_radius": 0.0,
+    "radius": 0.0,
+    "scale": 0.0,
+    "transform_matrix": 0.0
+  }
+}

@@ -1,19 +1,27 @@
-# Pixal3D preprocessing production qualification
+# Pixal3D ObjaverseXL production-path qualification
 
 ## 결론
 
-최적화된 production pipeline은 실제 Objaverse GLB 100개를 대상으로 download부터
+최적화된 production pipeline의 ObjaverseXL 경로는 실제 Objaverse GLB 100개를 대상으로 download부터
 raw archive/cleanup까지 전체 11개 command graph를 완료했다. 100개 모두 quality
 ledger에서 `completed`이며 quarantine은 0이다. 기존 canonical queue와 output은 사용하지
 않았고, 검증 전용 input/output/scratch와 GPU별 container를 사용했다.
 
+이 결과는 ObjaverseXL production 경로에 한정된다. ABO, HSSD, 3D-FUTURE는 native
+renderer를 사용하지 않고 기존 external Blender 경로로 자동 전환되며, 이번 100개
+E2E 범위에는 포함되지 않았다.
+
 검증한 코드 snapshot은 `a9114d82588e019e529204affdc97f08d46ca47f`이다. 검증 중
 발견한 worker 종료 후 reap race는 후속 commit `756f5d1`에서 수정했으며, 수정 후 전체
-test suite는 892 passed였다. 종료 grace 변경은 정상 산출물 계산 경로를 바꾸지 않는다.
+test suite는 892 passed였다. 이후 NFS fallback, descriptor-pinned Objaverse input과
+reproducible comparator까지 포함한 최종 suite는 900 passed였다. 이 보강은 정상 산출물
+계산 알고리즘을 바꾸지 않는다.
+최종 suite가 검증한 code tree는
+`05643ee3850c6286181d0a2f81bf06b7ead93697`이다.
 
 ## 성능 결과
 
-동일 100개 asset의 깨끗한 renderer benchmark와 동일 10개 asset의 process-startup
+동일 100개 asset의 깨끗한 renderer benchmark와 동일 10개 asset의 combined renderer-path
 benchmark 결과는 다음과 같다.
 
 | 범위 | 기준 | 최적화 | 향상 |
@@ -21,7 +29,7 @@ benchmark 결과는 다음과 같다.
 | 10 assets, external Blender + full-resolution Cycles fitting | 898초 (89.8초/asset) | 184초 (18.4초/asset) | 4.88배 |
 | 100 assets, 6 GPU, native full-resolution OPTIX | 765초 (7.65초/asset) | 424초 (4.24초/asset) | 1.80배 |
 | 100 assets, final Cycles backend | OPTIX 424초 | CUDA 357초 | CUDA 15.8% 단축 |
-| latent 전체, 6 GPU | 587초 + OOM 재개 49초 | 177초, OOM 없음 | 최초 기준 대비 3.32배 |
+| latent 전체, 6 GPU | 587초 후 OOM, 5개는 별도 49초 재개 | 177초, OOM 없음 | cache/restart 조건이 다른 진단값 |
 
 production 기본 backend는 출력 연속성을 위해 OPTIX로 유지한다. CUDA는 더 빠르지만
 800개 frame 중 alpha byte-exact 439개, binary mask exact 766개, 최저 mask IoU
@@ -44,7 +52,9 @@ exact production snapshot으로 다시 생성한 800 views도 모든 구조·cam
 이 독립 실행의 raw RGB PSNR min/p50/p95/p99는 11.89/24.33/49.50/59.55 dB였다.
 기존 renderer가 lighting seed를 고정하지 않으므로 독립 production run 사이의 RGB는
 원래 deterministic하지 않다. 따라서 production hard gate는 exact camera/alpha와 artifact
-schema/membership이고, RGB PSNR은 동일 seed를 주는 별도 evaluation에서만 hard gate로 쓴다.
+schema/membership이다. 동일 seed를 주는 별도 evaluation에서는 view별 RGB PSNR 50 dB를
+요구한다. latent acceptance는 exact schema/shape/dtype/coordinate와 family별 relative L2
+0.2% 이하이다.
 
 geometry 재사용 변경은 2,220개 VXZ/scale 파일이 모두 byte-exact였다. latent는 2,620개
 파일에서 schema, shape, dtype, sparse coordinate가 exact였고, 최대 relative L2 오차는
@@ -87,6 +97,27 @@ production에서는 GPU 하나만 노출한 container를 GPU당 하나씩 실행
 내부에서는 보이는 GPU가 ordinal 0이다. input dataset은 read-only, scratch와 output은
 container별로 분리하고, 검증 뒤에만 canonical output을 연결한다.
 
+## 재현 가능한 품질 검사
+
+검증 manifest, qualification config, 비교 report 및 test log는 이 문서 옆의
+`evidence/2026-09-13/`에 고정했다. output comparator는 다음처럼 실행한다.
+
+```bash
+python -m data_toolkit.benchmark_quality REFERENCE_ROOT CANDIDATE_ROOT \
+  --rgb-policy diagnostic
+
+# 두 render를 모두 --render_seed 444로 생성한 evaluation에서는
+python -m data_toolkit.benchmark_quality REFERENCE_ROOT CANDIDATE_ROOT \
+  --rgb-policy required --min-rgb-psnr 50
+```
+
+기본 production run은 unseeded이므로 첫 명령이 camera/alpha, artifact set, exact sparse
+coordinates와 latent relative-L2 threshold를 hard gate로 검사하고 RGB 분포는 report만 한다.
+실제 frozen output에 이 command를 다시 실행한 결과 render 800 PNG는 failure 0,
+alpha IoU 1.0으로 통과했고, latent 1,310 NPZ도 failure 0, 최대 relative L2
+0.1417104%로 0.2% 기준을 통과했다. exact command와 machine-readable 결과는
+`quality-comparator-result.json`과 `latent-comparator-result.json`에 있다.
+
 ## 보존된 증거
 
 n7의 검증 root:
@@ -104,6 +135,14 @@ results/resource-telemetry.csv
 data2/control/qualification/smoke/{quality,checkpoints}/
 data2/prepared/**/batch000.tar.manifest.json
 data3/archive/**/batch000.tar.manifest.json
+```
+
+저장소에 포함한 evidence index와 frozen input/config는 다음 경로에 있다.
+
+```text
+docs/benchmarks/evidence/2026-09-13/evidence-index.json
+docs/benchmarks/evidence/2026-09-13/objaverse-assets.txt
+docs/benchmarks/evidence/2026-09-13/qualification.yaml
 ```
 
 검증용 container 9개는 완료 후 모두 제거했다. `youngwoo_diyscene_fast_n7`은 worker 없이

@@ -5,7 +5,7 @@
 ## 0. 작업 위치와 환경
 
 ```bash
-cd /root/dev/Pixal3D/.worktrees/multiview-preprocess
+cd /root/dev/Pixal3D-fast
 conda activate pixal3d
 export PYTHONPATH=.
 ```
@@ -418,6 +418,48 @@ export PIXAL3D_RENDERER_MODE=native
 export PIXAL3D_NATIVE_WORKER_MAX_ASSETS=8
 export PIXAL3D_GPU_INDICES=0
 ```
+
+위 설정은 기존의 여러 GPU node 등록 예시와 함께 사용할 수 없다. native mode를 여러
+GPU로 확장할 때는 물리 GPU마다 container, node-id, local root를 하나씩 만들고 shared
+data2/data3 및 worker registry만 공유한다. 각 container에는 물리 GPU 하나만 노출하며,
+container 내부 등록 GPU는 항상 ordinal `0`이다. 예를 들어 n7의 물리 GPU 0--5는
+`node7-gpu0`--`node7-gpu5`로 각각 등록한다. 44 physical core 예산은 8,8,7,7,7,7로
+나눠 전체 합이 44를 넘지 않게 한다.
+
+```bash
+# host에서 GPU N마다 한 번 실행한다. 아래 commit은 최종 suite를 통과한 code tree다.
+N=0
+NODE_ID="node7-gpu${N}"
+CPU_LIMIT=8
+TESTED_CODE_COMMIT=05643ee3850c6286181d0a2f81bf06b7ead93697
+
+docker run -d --name "youngwoo_diyscene_fast_${NODE_ID}" \
+  --gpus "device=${N}" \
+  -v /file3/youngwoo/pixal3d-n7-runtime/source:/root/dev/Pixal3D-fast:ro \
+  -v /file2/youngwoo/pixal3d:/root/data2/pixal3d \
+  -v /file3/youngwoo/pixal3d:/root/data3/pixal3d \
+  -v "/file3/youngwoo/pixal3d-n7-runtime/local/gpu${N}:/root/node7/data/pixal3d" \
+  f1.unist.info:443/jhenv6:cu128-260813 sleep infinity
+
+docker exec "youngwoo_diyscene_fast_${NODE_ID}" bash -lc "
+  cd /root/dev/Pixal3D-fast
+  git merge-base --is-ancestor \"${TESTED_CODE_COMMIT}\" HEAD
+  conda activate pixal3d
+  CONFIG=data_toolkit/configs/multiview_preprocess.yaml
+  export PIXAL3D_RENDERER_MODE=native
+  export PIXAL3D_NATIVE_WORKER_MAX_ASSETS=8
+  export PIXAL3D_GPU_INDICES=0
+  python -m data_toolkit.pipeline.cli workers --config \"\$CONFIG\" \\
+    --action register --node-id \"${NODE_ID}\" --cpu-limit \"${CPU_LIMIT}\" \\
+    --gpus 0 --data2-root /root/data2/pixal3d \\
+    --data3-root /root/data3/pixal3d --local-root /root/node7/data/pixal3d
+  exec python -m data_toolkit.pipeline.cli supervisor --config \"\$CONFIG\" \\
+    --node-id \"${NODE_ID}\"
+"
+```
+
+GPU 1--5도 `N`, `NODE_ID`, `CPU_LIMIT`만 바꿔 반복한다. 동일 node-id 또는 동일 local
+root를 두 container에 사용하면 worker lock 또는 scratch 충돌이 발생하므로 금지한다.
 
 같은 `node-id`/`local-root`에 worker를 두 번 실행하면 두 번째 프로세스는 비차단
 파일 잠금에서 즉시 실패한다. 비정상 종료 시 커널이 잠금을 자동 해제하므로 별도

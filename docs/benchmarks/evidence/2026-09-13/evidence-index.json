@@ -1,0 +1,37 @@
+{
+  "scope": "ObjaverseXL_sketchfab production path, 100 assets",
+  "qualified_tool_commit": "a9114d82588e019e529204affdc97f08d46ca47f",
+  "tested_code_commit": "05643ee3850c6286181d0a2f81bf06b7ead93697",
+  "post_qualification_hardening": {
+    "worker_reap_fix": "756f5d16e71293ac02286a13556dc71abd1c983b",
+    "asset_and_nfs_hardening": "348aaa6935e4695babd6ed641ce70df1d6646156",
+    "quality_gate": "05643ee3850c6286181d0a2f81bf06b7ead93697"
+  },
+  "qualification_config_hash": "19184d5a1c0d2a6d817f9f44a8d35af392caaa8dd7e4cbff1d585c0685cb11d7",
+  "canonical_config_hash": "ff7dc7073940b869b001b8c8e60525390fe15091f518887814ddc1f3ca35e988",
+  "local_evidence_sha256": {
+    "latent-comparator-result.json": "aa2f619c66151c02d5f4dd4357e0730e2ee33d4c5d1d63064d439ffa1378c4c6",
+    "objaverse-assets.txt": "2b1181c70fa7de6fc6270133b8d3d180ed43d15702968d8c18de4a70b4dccce2",
+    "qualification.yaml": "d99ea2336aa0d152d45b4e3c6547bdbb324bb21aed558b331177875c70623345",
+    "quality-comparator-result.json": "f032fcfaa5b9a47d4f6fd0d12fa3b7c804b43cbb4ca80ef503c2e3606c0eb495",
+    "reference-vs-final-render.json": "f1bda55c8977087110f98d3a44718b33caafa9cfb0e8aa30ddb803d67a076811",
+    "reference-vs-optimized-render.json": "b00496a20fe0fe95a36f952a6a41c9a3a9cdb549213747675eb96f6a6af65485",
+    "test-result.txt": "330ba6f0cc6403bf398cc20a828d8378c6234fef4900afbee5c1146bc7bd7b91"
+  },
+  "original_n7_evidence_sha256": {
+    "results/reference-vs-final-render.json": "1e015616292782a92fdf987875ce4b083a929779a961435c93217627ec121657",
+    "results/reference-vs-optimized-render.json": "bdb0f82dbe97ecaec8aaf8243229c30535d179db05475aa9691470bc160ec88f",
+    "results/resource-telemetry.csv": "c0140240233f2fd11c5cf0616128604bf22fc68b805e19445012e75b03f185e3"
+  },
+  "completion": {
+    "input_sha256_matches": 100,
+    "completed_assets": 100,
+    "quarantined_assets": 0,
+    "shards": 6,
+    "commands_per_shard": 11,
+    "prepared_packs": 48,
+    "raw_archives": 6,
+    "manifests_with_exact_provenance": 54,
+    "pbr_family_exclusions_per_resolution": 15
+  }
+}

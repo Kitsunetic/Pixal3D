@@ -1,0 +1,38 @@
+{
+  "alpha_exact_frames": 800,
+  "alpha_iou": {"min": 1.0, "p50": 1.0, "p95": 1.0, "p99": 1.0},
+  "asset_sets_exact": true,
+  "candidate_assets": 100,
+  "common_assets": 100,
+  "file_paths_exact": true,
+  "foreground_rgb_psnr_db": {
+    "min": 5.70770263071552,
+    "p50": 16.638316456510253,
+    "p95": 40.50274741659426,
+    "p99": 53.12593729402731
+  },
+  "frames": 800,
+  "premultiplied_rgb_psnr_db": {
+    "min": 11.953500806153512,
+    "p50": 24.486386309321915,
+    "p95": 54.400227390339346,
+    "p99": 64.1939013931409
+  },
+  "reference_assets": 100,
+  "retries_exact": true,
+  "rgb_psnr_db": {
+    "min": 11.88674152110449,
+    "p50": 24.32797325862456,
+    "p95": 49.50276831357646,
+    "p99": 59.54605229663145
+  },
+  "transform_max_absolute_delta": {
+    "aabb": 0.0,
+    "camera_angle_x": 0.0,
+    "offset": 0.0,
+    "original_radius": 0.0,
+    "radius": 0.0,
+    "scale": 0.0,
+    "transform_matrix": 0.0
+  }
+}
