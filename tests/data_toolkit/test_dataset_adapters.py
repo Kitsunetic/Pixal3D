@@ -472,7 +472,7 @@ def test_objaverse_instance_streams_only_selected_regular_zip_member(tmp_path):
     result = module._process_instance(
         (
             {
-                "sha256": "a" * 64,
+                "sha256": sha256(b"selected").hexdigest(),
                 "local_path": (
                     "raw/github/repos/example/repository.zip/models/object.glb"
                 ),
@@ -482,7 +482,7 @@ def test_objaverse_instance_streams_only_selected_regular_zip_member(tmp_path):
         )
     )
 
-    assert result == (b"selected", "a" * 64)
+    assert result == (b"selected", sha256(b"selected").hexdigest())
 
 
 def test_objaverse_instance_pins_direct_file_before_callback(tmp_path):
@@ -501,7 +501,7 @@ def test_objaverse_instance_pins_direct_file_before_callback(tmp_path):
     result = module._process_instance(
         (
             {
-                "sha256": "a" * 64,
+                "sha256": sha256(b"verified").hexdigest(),
                 "local_path": "raw/objects/object.glb",
             },
             str(tmp_path),
@@ -510,6 +510,32 @@ def test_objaverse_instance_pins_direct_file_before_callback(tmp_path):
     )
 
     assert result == b"verified"
+
+
+def test_objaverse_instance_rejects_content_swapped_after_download(tmp_path):
+    module = importlib.import_module("data_toolkit.datasets.ObjaverseXL")
+    local = tmp_path / "raw/objects/object.glb"
+    local.parent.mkdir(parents=True)
+    local.write_bytes(b"replacement")
+    called = False
+
+    def consume_asset(_path, _digest):
+        nonlocal called
+        called = True
+
+    result = module._process_instance(
+        (
+            {
+                "sha256": sha256(b"verified").hexdigest(),
+                "local_path": "raw/objects/object.glb",
+            },
+            str(tmp_path),
+            consume_asset,
+        )
+    )
+
+    assert result is None
+    assert called is False
 
 
 @pytest.mark.parametrize("mode", ["outside", "symlink", "digest"])

@@ -110,3 +110,17 @@ def test_non_finite_reference_values_fail_closed(tmp_path):
     assert any(
         "non-finite reference values" in item for item in report["failures"]
     )
+
+
+def test_non_finite_json_values_fail_closed(tmp_path):
+    reference = tmp_path / "reference"
+    candidate = tmp_path / "candidate"
+    reference.mkdir()
+    candidate.mkdir()
+    (reference / "transforms.json").write_text('{"radius": Infinity}')
+    (candidate / "transforms.json").write_text('{"radius": Infinity}')
+
+    report = compare_benchmark_outputs(reference, candidate)
+
+    assert report["passed"] is False
+    assert report["failures"] == ["transforms.json: JSON values differ"]

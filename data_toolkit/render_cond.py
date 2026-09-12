@@ -8,6 +8,7 @@ import math
 import multiprocessing
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -48,6 +49,7 @@ RENAME_EXCHANGE = 2
 LIBC = ctypes.CDLL(None, use_errno=True)
 RENAMEAT2 = getattr(LIBC, "renameat2", None)
 NATIVE_BPY_VERSION = (4, 5, 1)
+SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 if RENAMEAT2 is not None:
     RENAMEAT2.argtypes = [
         ctypes.c_int,
@@ -57,6 +59,12 @@ if RENAMEAT2 is not None:
         ctypes.c_uint,
     ]
     RENAMEAT2.restype = ctypes.c_int
+
+
+def _validated_asset_sha(value: object) -> str:
+    if not isinstance(value, str) or SHA256_PATTERN.fullmatch(value) is None:
+        raise ValueError(f"invalid asset SHA-256: {value!r}")
+    return value
 
 
 def _import_adapter(adapter_name: str):
@@ -442,6 +450,7 @@ def _render_cond(
     renderer_mode="external",
     render_seed=None,
 ):
+    sha256 = _validated_asset_sha(sha256)
     cond_views = build_condition_views(sha256, config)
     final = Path(root) / "renders_cond" / sha256
     final.parent.mkdir(parents=True, exist_ok=True)
@@ -672,6 +681,7 @@ def main(argv: list[str] | None = None) -> None:
         total=len(metadata), desc="Filtering existing objects"
     ) as pbar:
         def check_sha256(sha256):
+            sha256 = _validated_asset_sha(sha256)
             final = (
                 Path(opt.render_cond_root) / "renders_cond" / sha256
             )

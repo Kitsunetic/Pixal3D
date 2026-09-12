@@ -316,6 +316,29 @@ def test_render_can_seed_lighting_for_output_comparison(
     assert calls[0][calls[0].index("--seed") + 1] == "1234"
 
 
+@pytest.mark.parametrize("asset_sha", ["../escaped", "/absolute", "A" * 64])
+def test_render_rejects_untrusted_asset_sha_before_path_use(
+    monkeypatch, tmp_path, config, asset_sha
+):
+    monkeypatch.setattr(
+        render_cond.subprocess,
+        "run",
+        lambda *_args, **_kwargs: pytest.fail("renderer must not start"),
+    )
+
+    with pytest.raises(ValueError, match="invalid asset SHA-256"):
+        render_cond._render_cond(
+            "fixture.glb",
+            asset_sha,
+            root=tmp_path,
+            config=config.render,
+            blender_path=Path("/tools/blender"),
+            timeout_seconds=37,
+        )
+
+    assert not (tmp_path / "renders_cond").exists()
+
+
 def test_existing_render_is_replaced_with_atomic_exchange(monkeypatch, tmp_path):
     temporary = tmp_path / ".temporary"
     final = tmp_path / "final"

@@ -134,28 +134,38 @@ def _selected_zip_member(
     return selected
 
 
+def _descriptor_asset_digest(
+    descriptor: int,
+    member: PurePosixPath | None,
+) -> str:
+    digest = sha256()
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    try:
+        with os.fdopen(os.dup(descriptor), "rb") as source:
+            if member is None:
+                stream = source
+                archive = None
+            else:
+                archive = zipfile.ZipFile(source, "r")
+                info = _selected_zip_member(archive, member)
+                stream = archive.open(info, "r")
+            try:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            finally:
+                if stream is not source:
+                    stream.close()
+                if archive is not None:
+                    archive.close()
+    finally:
+        os.lseek(descriptor, 0, os.SEEK_SET)
+    return digest.hexdigest()
+
+
 def _asset_digest(root: Path, relative: PurePosixPath) -> str:
     archive_relative, member = _split_archive_path(relative)
-    digest = sha256()
-    with _open_regular_file(root, archive_relative) as descriptor, os.fdopen(
-        os.dup(descriptor), "rb"
-    ) as source:
-        if member is None:
-            stream = source
-            archive = None
-        else:
-            archive = zipfile.ZipFile(source, "r")
-            info = _selected_zip_member(archive, member)
-            stream = archive.open(info, "r")
-        try:
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
-        finally:
-            if stream is not source:
-                stream.close()
-            if archive is not None:
-                archive.close()
-    return digest.hexdigest()
+    with _open_regular_file(root, archive_relative) as descriptor:
+        return _descriptor_asset_digest(descriptor, member)
 
 
 def _relative_download_path(root: Path, value: str) -> PurePosixPath:
@@ -275,6 +285,12 @@ def _process_instance(args):
                 file = root.joinpath(*local_path.parts)
                 record = func(str(file), asset_sha)
             else:
+                actual_digest = _descriptor_asset_digest(descriptor, member)
+                expected_digest = _expected_digest(metadatum)
+                if actual_digest != expected_digest:
+                    raise ValueError(
+                        f"Objaverse asset changed after verification: {asset_sha}"
+                    )
                 if member is not None:
                     with tempfile.TemporaryDirectory() as tmp_dir:
                         with os.fdopen(

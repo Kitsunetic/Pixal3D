@@ -121,8 +121,19 @@ def _json_close(reference: object, candidate: object) -> bool:
             _json_close(expected, actual)
             for expected, actual in zip(reference, candidate, strict=True)
         )
+    if isinstance(reference, bool) or isinstance(candidate, bool):
+        return reference is candidate
     if isinstance(reference, (int, float)) and isinstance(candidate, (int, float)):
-        return math.isclose(reference, candidate, rel_tol=0.0, abs_tol=CAMERA_ATOL)
+        return (
+            math.isfinite(reference)
+            and math.isfinite(candidate)
+            and math.isclose(
+                reference,
+                candidate,
+                rel_tol=0.0,
+                abs_tol=CAMERA_ATOL,
+            )
+        )
     return reference == candidate
 
 
