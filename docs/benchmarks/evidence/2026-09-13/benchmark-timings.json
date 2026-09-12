@@ -79,6 +79,44 @@
         "df2489f7ef841d7db719bbcb9426771fa8253c14db0924f0f10a02dcc3cadf41",
         "4d7f8882eeb1f7b2fb43ef6efc3cbc598b925f8b84ca638ce81b28f0ac855a60"
       ]
+    },
+    {
+      "name": "reference-latent-100",
+      "assets": 100,
+      "process_topology": "six ranks on six GPUs",
+      "stage": "shape, SS, and PBR latent encoding",
+      "rank_wall_seconds": [538, 526, 574, 569, 526, 587],
+      "wall_seconds": 587,
+      "exit_codes": [1, 0, 0, 0, 0, 0],
+      "resume_wall_seconds": 49,
+      "resume_exit_code": 0,
+      "notes": "rank 0 hit PBR-1024 fragmentation OOM; five missing assets resumed with micro-batch two",
+      "source_logs_sha256": [
+        "a45ad86ac35bdf090f049012e1b702d78e60efde1201da0b0d7a7f2f5825cc4c",
+        "f51436a35d0b1ff2e15a0bd90b8144a3b6e121b99160fe421e9f06f142edffb4",
+        "0ff5a4710ac59ee5f3e25d91096b1b21103b235205e0b9c0fd7270647b8652a4",
+        "e06f47cfa6ac407f27edc69515f0883f762adedbdd2930b5d3070f72f546eae9",
+        "f51436a35d0b1ff2e15a0bd90b8144a3b6e121b99160fe421e9f06f142edffb4",
+        "bed137e614563b33e7c4860936e832fbac2a1d6eb676769d6a6c87617986f021"
+      ],
+      "resume_source_log_sha256": "9d6ccbea376a052b15822c3d44546d62c4079b89177c5a6c674a25d4c2b39601"
+    },
+    {
+      "name": "candidate-latent-100",
+      "assets": 100,
+      "process_topology": "six ranks on six GPUs",
+      "stage": "bundled shape, SS, and PBR latent encoding with adaptive micro-batching",
+      "rank_wall_seconds": [164, 162, 163, 157, 164, 177],
+      "wall_seconds": 177,
+      "exit_codes": [0, 0, 0, 0, 0, 0],
+      "source_logs_sha256": [
+        "1ade8d95673f24b4f97599b6bc1ae041f91e69bdde06cde33101359feba61e99",
+        "97e5590a875b4f355ca3f3cb9174adbdec7f1bc9e8a9c4d870a1a3f3f9f3f35a",
+        "6d7f720c7118b21d9e10562aa24e6172c8d06d0c69eba4929a8369fce61fe350",
+        "28ac04b8126a0794aa5eba6d267b56951bde51fe0fc619aa3622f9e4f141d67a",
+        "517157e4a4341c754872a5ba4673f8350a46388c468bf47e9a5ce8139f9b7d25",
+        "924732897489c90909be6c8b831dc04f2abbe98fe904ba92c80cc1c4e8e588bb"
+      ]
     }
   ]
 }

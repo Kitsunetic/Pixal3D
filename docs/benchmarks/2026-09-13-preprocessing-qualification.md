@@ -17,7 +17,7 @@ test suite는 892 passed였다. 이후 NFS fallback, descriptor-pinned Objaverse
 reproducible comparator까지 포함한 최종 suite는 900 passed였다. 이 보강은 정상 산출물
 계산 알고리즘을 바꾸지 않는다.
 최종 suite가 검증한 runtime code tree는
-`81425bacedfa5411eb96eb6c65f5b9a0fafb5527`이다. 저해상도 fitting과 최초 target
+`c1002e990a74187f5b01f2290238f7a4eb698262`이다. 저해상도 fitting과 최초 target
 resolution 검증이 불일치하면 원래 radius와 10회 budget으로 legacy full-resolution
 loop를 완전히 재실행한다. 이 동작은 source-string 검사가 아니라 replay 조건과 초기화
 상태를 실행하는 regression test로 고정했다. comparator는 입력 root가 없거나 비교 가능한
@@ -107,6 +107,11 @@ production에서는 GPU 하나만 노출한 container를 GPU당 하나씩 실행
 내부에서는 보이는 GPU가 ordinal 0이다. input dataset은 read-only, scratch와 output은
 container별로 분리하고, 검증 뒤에만 canonical output을 연결한다.
 
+최종 overlay Dockerfile은 n7에서 실제 build했다. 기존 image의 `bpy 4.4.0`은 pinned
+`bpy 4.5.1`로 교체됐고, GPU 하나를 노출한 임시 container에서 exact commit marker,
+Blender 4.5.1, Torch 2.11.0+cu128, RTX 4090 인식을 확인했다. 결과와 base image ID는
+`overlay-image-smoke.json`에 기록했으며 임시 container/image/build root는 제거했다.
+
 ## 운영 threat model과 장애 복구
 
 신뢰 경계 안에는 고정된 container image/runtime, worker가 소유한 scratch/output, read-only
@@ -126,6 +131,9 @@ NFS가 atomic exchange를 지원하지 않으면 기존 output을 `.previous`에
 
 검증 manifest, qualification config, 비교 report 및 test log는 이 문서 옆의
 `evidence/2026-09-13/`에 고정했다. output comparator는 다음처럼 실행한다.
+6개 checkpoint와 quality ledger, 54개 publication manifest 원문도
+`qualification-raw/`에 포함했으며, 전체 tree digest와 재검산 결과는
+`qualification-raw-summary.json`에 기록했다.
 
 ```bash
 python -m data_toolkit.benchmark_quality REFERENCE_ROOT CANDIDATE_ROOT \
@@ -142,7 +150,8 @@ coordinates와 latent relative-L2 threshold를 hard gate로 검사하고 RGB 분
 alpha IoU 1.0으로 통과했고, latent 1,310 NPZ도 failure 0, 최대 relative L2
 0.1417104%로 0.2% 기준을 통과했다. exact command와 machine-readable 결과는
 `quality-comparator-result.json`과 `latent-comparator-result.json`에 있다.
-빈 root와 누락된 root가 성공으로 판정되지 않는 regression도 최종 903-test suite에 포함한다.
+빈 root, 누락된 root, non-finite reference/candidate가 성공으로 판정되지 않는 regression도
+최종 906-test suite에 포함한다.
 
 ## 보존된 증거
 

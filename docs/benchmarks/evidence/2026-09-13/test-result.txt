@@ -2,10 +2,10 @@ Command:
 TMPDIR=$PWD/.pytest-tmp /home/rvi/conda/envs/torch/bin/python -m pytest -q
 
 Runtime code commit:
-81425bacedfa5411eb96eb6c65f5b9a0fafb5527
+c1002e990a74187f5b01f2290238f7a4eb698262
 
 Result:
-903 passed, 1 warning in 131.00s (0:02:10)
+906 passed, 1 warning in 129.20s (0:02:09)
 
 Warning:
 tests/data_toolkit/test_view_transform_alignment.py::test_pbr_transform_matches_geometry_transform_and_quantized_support

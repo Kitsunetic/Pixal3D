@@ -1,0 +1,57 @@
+{
+  "batches": {
+    "batch000": {
+      "PBR-1024": {
+        "manifest": "qualification/smoke/pbr/1024/ObjaverseXL_sketchfab/ObjaverseXL_sketchfab-00002/batch000.tar.manifest.json",
+        "manifest_sha256": "16d34719a3976bfb4695fc241f5817f7e152e41f307c0ea41dd46afdc9c326b4",
+        "pack": "qualification/smoke/pbr/1024/ObjaverseXL_sketchfab/ObjaverseXL_sketchfab-00002/batch000.tar",
+        "pack_sha256": "316bc5bbc22a1f06b0a62fde046386e6ea3551cb03da0a22239b7782f2fc264e"
+      },
+      "PBR-256": {
+        "manifest": "qualification/smoke/pbr/256/ObjaverseXL_sketchfab/ObjaverseXL_sketchfab-00002/batch000.tar.manifest.json",
+        "manifest_sha256": "1ccb8a688eedc9d683ccc7598633ac20072734bba1a2a90685262cc7700e2d89",
+        "pack": "qualification/smoke/pbr/256/ObjaverseXL_sketchfab/ObjaverseXL_sketchfab-00002/batch000.tar",
+        "pack_sha256": "ec74b950835090d565b6a2277cb21039e3086386757f12aa002add48397471ef"
+      },
+      "PBR-512": {
+        "manifest": "qualification/smoke/pbr/512/ObjaverseXL_sketchfab/ObjaverseXL_sketchfab-00002/batch000.tar.manifest.json",
+        "manifest_sha256": "ab2bb9c1b8bf0c29fb7c987b88efd1fd5c762cabda94bb661ba215a5846cd829",
+        "pack": "qualification/smoke/pbr/512/ObjaverseXL_sketchfab/ObjaverseXL_sketchfab-00002/batch000.tar",
+        "pack_sha256": "4ef59a15610b3e2454fa74602d2bc22a3bee0e580e2c01ad526a3a286806e2a0"
+      },
+      "SS-64": {
+        "manifest": "qualification/smoke/ss/64/ObjaverseXL_sketchfab/ObjaverseXL_sketchfab-00002/batch000.tar.manifest.json",
+        "manifest_sha256": "d3c35419dd66dbd932cc32c5e5fe1b8402c87c51506cc0e537be53a217e8c69a",
+        "pack": "qualification/smoke/ss/64/ObjaverseXL_sketchfab/ObjaverseXL_sketchfab-00002/batch000.tar",
+        "pack_sha256": "6c8ae4fb6b92e00746a47ac7539b0c8c56902be275c7d71eb6026c9d925b5c97"
+      },
+      "common": {
+        "manifest": "qualification/smoke/common/ObjaverseXL_sketchfab/ObjaverseXL_sketchfab-00002/batch000.tar.manifest.json",
+        "manifest_sha256": "a9c7efe4467e6232c68f7092fd4c69dec90692c72c473d261223b9a8ca0066f8",
+        "pack": "qualification/smoke/common/ObjaverseXL_sketchfab/ObjaverseXL_sketchfab-00002/batch000.tar",
+        "pack_sha256": "bd833ea8c7991ad41b9d3569dc1272e1ebf993d1f79ae470cad213e617f96882"
+      },
+      "shape-1024": {
+        "manifest": "qualification/smoke/shape/1024/ObjaverseXL_sketchfab/ObjaverseXL_sketchfab-00002/batch000.tar.manifest.json",
+        "manifest_sha256": "7f9c8143b694de22c32e7c1cf59853b849e331d21f1d9b615854f4ee22bbca89",
+        "pack": "qualification/smoke/shape/1024/ObjaverseXL_sketchfab/ObjaverseXL_sketchfab-00002/batch000.tar",
+        "pack_sha256": "5ba6bb35d5690f848fe6fbf980d5749818ae780766aa2e4ddfc5f901a8a98ccb"
+      },
+      "shape-256": {
+        "manifest": "qualification/smoke/shape/256/ObjaverseXL_sketchfab/ObjaverseXL_sketchfab-00002/batch000.tar.manifest.json",
+        "manifest_sha256": "2efe039e5770fa45752a79d5a521ae8dac568b3d1281b1c322b6964d894d2ceb",
+        "pack": "qualification/smoke/shape/256/ObjaverseXL_sketchfab/ObjaverseXL_sketchfab-00002/batch000.tar",
+        "pack_sha256": "07c8a359c505dbf3cb19ecc42ed852c2aa4fe54500d2d389e70f6a67b98b15ce"
+      },
+      "shape-512": {
+        "manifest": "qualification/smoke/shape/512/ObjaverseXL_sketchfab/ObjaverseXL_sketchfab-00002/batch000.tar.manifest.json",
+        "manifest_sha256": "dcdb9f9e98598c169b42a5723cf9282699606364d8515235bbb872c5daac07f3",
+        "pack": "qualification/smoke/shape/512/ObjaverseXL_sketchfab/ObjaverseXL_sketchfab-00002/batch000.tar",
+        "pack_sha256": "703397d5f3940e5a8db4f97d8407cfe813821468f6402f00611ce0bbd020e575"
+      }
+    }
+  },
+  "gate": "smoke",
+  "shard_id": "ObjaverseXL_sketchfab-00002",
+  "source": "ObjaverseXL_sketchfab"
+}

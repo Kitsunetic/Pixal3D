@@ -1,0 +1,29 @@
+{
+  "source_root": "/file3/youngwoo/pixal3d-e2e-qualification-final-a9114d8",
+  "capture_method": "read-only bind mount in an ephemeral root container",
+  "captured_files": 72,
+  "captured_tree_sha256": "3a5190dcc1112949b154bb04558d35527cb9d76a0b507c67ee8536e856b1c75e",
+  "quality": {
+    "ledger_files": 6,
+    "entries": 100,
+    "completed": 100,
+    "quarantined": 0,
+    "asset_set_matches_objaverse_assets": true
+  },
+  "checkpoints": {
+    "files": 6,
+    "completed_commands_per_file": 11,
+    "active_attempts": 0
+  },
+  "publication_manifests": {
+    "files": 54,
+    "prepared": 48,
+    "raw": 6,
+    "tool_commits": [
+      "a9114d82588e019e529204affdc97f08d46ca47f"
+    ],
+    "config_hashes": [
+      "19184d5a1c0d2a6d817f9f44a8d35af392caaa8dd7e4cbff1d585c0685cb11d7"
+    ]
+  }
+}

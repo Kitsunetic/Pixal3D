@@ -428,16 +428,18 @@ container 내부 등록 GPU는 항상 ordinal `0`이다. 예를 들어 n7의 물
 
 ```bash
 # host에서 한 번, 검증된 runtime tree를 불변 image에 복사한다.
-SOURCE_ROOT=/file3/youngwoo/pixal3d-n7-runtime/source
-TESTED_CODE_COMMIT=81425bacedfa5411eb96eb6c65f5b9a0fafb5527
-PIXAL3D_FAST_IMAGE=pixal3d-fast:81425ba
+SOURCE_ROOT=/file3/youngwoo/pixal3d-fast-release-c1002e9
+TESTED_CODE_COMMIT=c1002e990a74187f5b01f2290238f7a4eb698262
+PIXAL3D_FAST_IMAGE=pixal3d-fast:c1002e9
 
 set -euo pipefail
-test "$(git -C "$SOURCE_ROOT" rev-parse HEAD:data_toolkit)" = \
-  "$(git -C "$SOURCE_ROOT" rev-parse "$TESTED_CODE_COMMIT:data_toolkit")"
-git -C "$SOURCE_ROOT" diff --quiet -- data_toolkit
+test ! -e "$SOURCE_ROOT"
+git clone https://github.com/Kitsunetic/Pixal3D.git "$SOURCE_ROOT"
+git -C "$SOURCE_ROOT" checkout --detach "$TESTED_CODE_COMMIT"
+test "$(git -C "$SOURCE_ROOT" rev-parse HEAD)" = "$TESTED_CODE_COMMIT"
+test -z "$(git -C "$SOURCE_ROOT" status --porcelain=v1 --untracked-files=all)"
 docker build \
-  --build-arg BASE_IMAGE=f1.unist.info:443/jhenv6:cu128-260813 \
+  --build-arg BASE_IMAGE=f1.unist.info:443/jhenv6@sha256:d373b9e28450f3a79dd917708bc81eaa0cdbb1638da82f310bd4e7721161d4ab \
   --build-arg PIXAL3D_RUNTIME_COMMIT="$TESTED_CODE_COMMIT" \
   -f "$SOURCE_ROOT/docker/production-fast-overlay.Dockerfile" \
   -t "$PIXAL3D_FAST_IMAGE" "$SOURCE_ROOT"
@@ -475,9 +477,9 @@ docker exec "youngwoo_diyscene_fast_${NODE_ID}" bash -lc "
 ```
 
 runtime source는 image layer에 들어가며 host source bind를 사용하지 않는다. 따라서 preflight
-이후 host checkout이 바뀌어도 실행 중 container 코드는 변하지 않는다. build 전 검사는
-`data_toolkit` tree가 최종 903-test suite를 통과한 commit과 정확히 같은지 확인하며, 실패하면
-`set -e`로 image 생성 전에 중단한다.
+이후 host checkout이 바뀌어도 실행 중 container 코드는 변하지 않는다. release source는 fork의
+exact commit으로 detached checkout하고 staged/untracked 파일까지 없는지 검사한다. base image도
+registry digest로 고정하며, 어느 검사든 실패하면 `set -e`로 image 생성 전에 중단한다.
 
 GPU 1--5도 `N`, `NODE_ID`, `CPU_LIMIT`만 바꿔 반복한다. 동일 node-id 또는 동일 local
 root를 두 container에 사용하면 worker lock 또는 scratch 충돌이 발생하므로 금지한다.

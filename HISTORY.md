@@ -2023,7 +2023,10 @@ asset별 `flock`으로 직렬화하고, 새 output 게시와 기존 output rollb
 `.previous`를 남겨 다음 resume에서 복구한다. target-resolution disagreement fallback은 문자열
 검사가 아니라 replay 조건과 원래 radius/10회 budget 초기화 함수를 실행하는 regression으로
 검증한다. 관련 전체 suite는 runtime commit
-`81425bacedfa5411eb96eb6c65f5b9a0fafb5527`에서 903 passed, warning 1개였다.
+`c1002e990a74187f5b01f2290238f7a4eb698262`에서 906 passed, warning 1개였다.
+추가 실패 주입에서는 이미 `.previous`가 존재하는 상태의 publish/rollback 이중 실패도
+last-known-good을 보존하고 다음 resume에서 복구함을 확인했다. comparator는 reference와
+candidate 양쪽의 non-finite latent를 모두 fail-closed 처리한다.
 
 성능 수치의 원본 log digest와 rank별 wall time을 `benchmark-timings.json`에, geometry 2,220개
 파일의 reference/candidate hash-manifest digest를 `geometry-hash-summary.json`에 기록했다.
@@ -2031,3 +2034,9 @@ asset별 `flock`으로 직렬화하고, 새 output 게시와 기존 output rollb
 사용하도록 runbook을 바꿨다. image 내부 commit marker를 supervisor 시작 전에 exact 비교하며,
 host checkout이 이후 바뀌어도 실행 중 코드는 변하지 않는다. 신뢰 경계, descriptor-pinned input,
 archive path 검증, NFS rollback/recovery 동작도 qualification 문서에 명시했다.
+
+n7에서 overlay image를 실제 build해 base의 `bpy 4.4.0`을 pinned `bpy 4.5.1`로 교체하고,
+GPU 0 하나를 노출한 임시 container에서 commit marker, Blender 4.5.1, Torch 2.11.0+cu128,
+RTX 4090 인식을 확인했다. 임시 image/container/build root는 검사 후 제거했다.
+운영 runbook은 기존 non-Git source directory에 의존하지 않고 fork의 exact commit을 새 release
+directory에 detached checkout하며, dirty/untracked 상태를 거부하고 base image도 digest로 고정한다.
