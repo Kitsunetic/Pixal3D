@@ -1,0 +1,30 @@
+{
+  "source_root": "/file3/youngwoo/pixal3d-e2e-qualification-final-a9114d8/results",
+  "config_hash": "19184d5a1c0d2a6d817f9f44a8d35af392caaa8dd7e4cbff1d585c0685cb11d7",
+  "interrupted_shard_resumes": [
+    {
+      "shard": "ObjaverseXL_sketchfab-00000",
+      "elapsed_seconds": 1195.0810849899426,
+      "source_file": "resume-partial-ObjaverseXL_sketchfab-00000.json",
+      "source_sha256": "038c827f49c000d904ce519e43eae115cee90d1b32866653e640130e29357cb4"
+    },
+    {
+      "shard": "ObjaverseXL_sketchfab-00002",
+      "elapsed_seconds": 655.7454450558871,
+      "source_file": "resume-ObjaverseXL_sketchfab-00002.json",
+      "source_sha256": "227b37f5eca3409617fe43ad512fb879e4e5b187f43414769970bfeceeab953f"
+    },
+    {
+      "shard": "ObjaverseXL_sketchfab-00003",
+      "elapsed_seconds": 514.9882306512445,
+      "source_file": "resume-ObjaverseXL_sketchfab-00003.json",
+      "source_sha256": "45f64e28c26105d749bd04eba14ab66ed17a117becc86059c0c1a1671251dc21"
+    }
+  ],
+  "completed_shard_noop": {
+    "shard": "ObjaverseXL_sketchfab-00000",
+    "elapsed_seconds": 10.104816089384258,
+    "source_file": "resume-ObjaverseXL_sketchfab-00000.json",
+    "source_sha256": "71e2f4779e8c3026d8599853d4c86061afbc72dc65f0567e072e43257e5c614c"
+  }
+}

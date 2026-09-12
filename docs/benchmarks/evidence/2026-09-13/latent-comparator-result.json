@@ -1,14 +1,19 @@
 {
-  "command": "python -m data_toolkit.benchmark_quality latent-reference latent-candidate --rgb-policy diagnostic --max-latent-relative-l2 0.002",
+  "host": "n7",
+  "runtime_commit": "b67c6b371028952fe423c1379b408871e1941274",
+  "runtime_tree": "489c3a256ff083872ff4fd1b18837e0544b766c2",
+  "command": "python -m data_toolkit.benchmark_quality latent-reference latent-candidate --rgb-policy diagnostic --max-latent-relative-l2 0.002 --expected-json 1310 --expected-npz 1310 --expected-png 0 --expected-vxz 0",
   "result": {
     "compared_npz": 1310,
     "compared_png": 0,
     "compared_vxz": 0,
+    "expected_artifact_counts": {".json": 1310, ".npz": 1310, ".png": 0, ".vxz": 0},
     "failures": [],
     "max_latent_relative_l2": 0.0014171041262951462,
     "min_alpha_iou": 1.0,
     "min_rgb_psnr": "Infinity",
     "passed": true,
+    "reference_artifact_counts": {".json": 1310, ".npz": 1310, ".png": 0, ".vxz": 0},
     "rgb_policy": "diagnostic"
   }
 }

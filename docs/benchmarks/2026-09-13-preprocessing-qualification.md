@@ -17,14 +17,16 @@ test suite는 892 passed였다. 이후 NFS fallback, descriptor-pinned Objaverse
 reproducible comparator까지 포함한 최종 suite는 900 passed였다. 이 보강은 정상 산출물
 계산 알고리즘을 바꾸지 않는다.
 최종 suite가 검증한 runtime commit은
-`87b58b49a07f91d0d7c069b11044a5881fade64f`이고 `data_toolkit` runtime tree는
-`b7b315125600bbfa4d134a6f6e2987f12e9d6103`이다. 저해상도 fitting과 최초 target
+`b67c6b371028952fe423c1379b408871e1941274`이고 `data_toolkit` runtime tree는
+`489c3a256ff083872ff4fd1b18837e0544b766c2`이다. 저해상도 fitting과 최초 target
 resolution 검증이 불일치하면 원래 radius와 10회 budget으로 legacy full-resolution
 loop를 완전히 재실행한다. 이 동작은 source-string 검사가 아니라 replay 조건과 초기화
 상태를 실행하는 regression test로 고정했다. comparator는 입력 root가 없거나 비교 가능한
 artifact가 0개이면 실패하도록 fail-closed로 보강했다. JSON/NPZ의 non-finite 값과 경로에
 사용되는 비정상 asset SHA-256도 거부하며, Objaverse input은 실제 processor에 전달하기
-직전 열린 descriptor의 digest를 다시 검증한다.
+직전 열린 descriptor의 digest를 다시 검증한다. 비교기에는 frozen manifest의 suffix별
+expected count 네 개가 필수이며, NFS publish 전에는 candidate tree와 rename metadata를
+동기화한다. ZIP member는 압축 해제 크기 8 GiB를 넘으면 처리하지 않는다.
 
 ## 성능 결과
 
@@ -49,7 +51,8 @@ production 기본 backend는 출력 연속성을 위해 OPTIX로 유지한다. C
 이번 100-asset E2E wall time은 성능 기준으로 사용하지 않는다. 중간에 다른 사용자가
 GPU 0--3에서 학습을 시작했고, 해당 작업을 보호하기 위해 세 shard를 중지한 뒤 빈 GPU에서
 재개했기 때문이다. 이 실행은 완전성·재개·메모리 안정성 검증이며 위 표의 오염되지 않은
-실행을 속도 기준으로 사용한다.
+실행을 속도 기준으로 사용한다. 세 resume와 완료 shard의 10.10초 no-op 원본 record hash는
+`resume-verification.json`에 별도로 보존했다.
 
 ## 출력 동등성
 
@@ -141,21 +144,25 @@ NFS가 atomic exchange를 지원하지 않으면 기존 output을 `.previous`에
 
 ```bash
 python -m data_toolkit.benchmark_quality REFERENCE_ROOT CANDIDATE_ROOT \
-  --rgb-policy diagnostic
+  --rgb-policy diagnostic \
+  --expected-json 100 --expected-npz 0 --expected-png 800 --expected-vxz 0
 
 # 두 render를 모두 --render_seed 444로 생성한 evaluation에서는
 python -m data_toolkit.benchmark_quality REFERENCE_ROOT CANDIDATE_ROOT \
-  --rgb-policy required --min-rgb-psnr 50
+  --rgb-policy required --min-rgb-psnr 50 \
+  --expected-json 100 --expected-npz 0 --expected-png 800 --expected-vxz 0
 ```
 
-기본 production run은 unseeded이므로 첫 명령이 camera/alpha, artifact set, exact sparse
+expected count 네 개는 frozen manifest에서 가져온 trusted contract이며 하나라도 생략하거나
+실제 파일 수가 다르면 비교기는 실패한다. 기본 production run은 unseeded이므로 첫 명령이 camera/alpha, artifact set, exact sparse
 coordinates와 latent relative-L2 threshold를 hard gate로 검사하고 RGB 분포는 report만 한다.
 실제 frozen output에 이 command를 다시 실행한 결과 render 800 PNG는 failure 0,
 alpha IoU 1.0으로 통과했고, latent 1,310 NPZ도 failure 0, 최대 relative L2
 0.1417104%로 0.2% 기준을 통과했다. exact command와 machine-readable 결과는
 `quality-comparator-result.json`과 `latent-comparator-result.json`에 있다.
 빈 root, 누락된 root, non-finite reference/candidate가 성공으로 판정되지 않는 regression도
-최종 911-test suite에 포함한다.
+최종 916-test suite에 포함한다. n7의 frozen 결과에 expected-count 계약을 적용해 render와
+latent 비교도 다시 실행했으며 각각 exit 0이었다.
 
 ## 보존된 증거
 

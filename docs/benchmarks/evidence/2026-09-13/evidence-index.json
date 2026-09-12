@@ -1,30 +1,32 @@
 {
   "scope": "ObjaverseXL_sketchfab production path, 100 assets",
   "qualified_tool_commit": "a9114d82588e019e529204affdc97f08d46ca47f",
-  "tested_code_commit": "87b58b49a07f91d0d7c069b11044a5881fade64f",
-  "tested_runtime_tree": "b7b315125600bbfa4d134a6f6e2987f12e9d6103",
+  "tested_code_commit": "b67c6b371028952fe423c1379b408871e1941274",
+  "tested_runtime_tree": "489c3a256ff083872ff4fd1b18837e0544b766c2",
   "post_qualification_hardening": {
     "worker_reap_fix": "756f5d16e71293ac02286a13556dc71abd1c983b",
     "asset_and_nfs_hardening": "348aaa6935e4695babd6ed641ce70df1d6646156",
     "quality_gate": "05643ee3850c6286181d0a2f81bf06b7ead93697",
     "legacy_target_mismatch_fallback": "04f7e60dced5392df7aa2c2f626cc55cdceb987d",
     "fail_closed_publication_and_comparison": "c1002e990a74187f5b01f2290238f7a4eb698262",
-    "point_of_use_input_and_image_provenance": "87b58b49a07f91d0d7c069b11044a5881fade64f"
+    "point_of_use_input_and_image_provenance": "87b58b49a07f91d0d7c069b11044a5881fade64f",
+    "final_integrity_contract": "b67c6b371028952fe423c1379b408871e1941274"
   },
   "qualification_config_hash": "19184d5a1c0d2a6d817f9f44a8d35af392caaa8dd7e4cbff1d585c0685cb11d7",
   "canonical_config_hash": "ff7dc7073940b869b001b8c8e60525390fe15091f518887814ddc1f3ca35e988",
   "local_evidence_sha256": {
     "benchmark-timings.json": "1c6b4c07d76aada6cb06041965339a3a2837f35db4a158b4fc95cab6acc4bd8f",
     "geometry-hash-summary.json": "a4ff9d062335aecf6cfae1622bdd0416755f3ae5f782bbf8e47ced97fafec774",
-    "latent-comparator-result.json": "aa2f619c66151c02d5f4dd4357e0730e2ee33d4c5d1d63064d439ffa1378c4c6",
+    "latent-comparator-result.json": "42e7ae81d617f9050e8e90638489cb1a15b063394b21aa4899d8c770e7cf6730",
     "objaverse-assets.txt": "2b1181c70fa7de6fc6270133b8d3d180ed43d15702968d8c18de4a70b4dccce2",
-    "overlay-image-smoke.json": "9c9ce2032c00c4c9ba9f09924053a30458563ce135e8c9452dd0e1d1304548b1",
+    "overlay-image-smoke.json": "8b81136b7cfc54e34e26296bac01dad4103470005b2048a8cdef69ab474f86fc",
     "qualification-raw-summary.json": "310349b4409226b7ca796af99a19491a448af78fbc1924fc179caa190136d1a8",
     "qualification.yaml": "d99ea2336aa0d152d45b4e3c6547bdbb324bb21aed558b331177875c70623345",
-    "quality-comparator-result.json": "f032fcfaa5b9a47d4f6fd0d12fa3b7c804b43cbb4ca80ef503c2e3606c0eb495",
+    "quality-comparator-result.json": "3e339aecff3c1d2ee4815dc469e6390e0315e0d912003b40c203fee0b2a2ba79",
     "reference-vs-final-render.json": "f1bda55c8977087110f98d3a44718b33caafa9cfb0e8aa30ddb803d67a076811",
     "reference-vs-optimized-render.json": "b00496a20fe0fe95a36f952a6a41c9a3a9cdb549213747675eb96f6a6af65485",
-    "test-result.txt": "864cf95a42b98a090517f5140faea0625c76f37c8ed4e509a17edbacf35d4c81"
+    "resume-verification.json": "9744b480f5bb4967baac3a03710eed8434f1b6da3a5a488d06fb02659ee02cc7",
+    "test-result.txt": "8a4eb223dec0edcb717eec28e3a60de4a06da7372079a0cc5223501454f4f7ab"
   },
   "qualification_raw_tree": {
     "path": "qualification-raw",

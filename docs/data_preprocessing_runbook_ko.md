@@ -144,7 +144,8 @@ ObjaverseXL historical smoke는 20개 범위를 그대로 유지하며 다시 �
 conda run --no-capture-output -n pixal3d \
   python -m data_toolkit.pipeline.cli plan \
   --config data_toolkit/configs/multiview_preprocess.yaml \
-  --gate smoke --source SOURCE --shard SOURCE-00000
+  --gate smoke --source ObjaverseXL_sketchfab \
+  --shard ObjaverseXL_sketchfab-00000
 ```
 
 전체 registry를 출력하므로, 실제 smoke 실행은 `--count 9`를 사용한다.
@@ -406,6 +407,7 @@ Blender Python module도 설치한다. 이 옵션은 GPU 하나만 노출한 con
 python -m pip install -r data_toolkit/requirements-native-renderer.txt
 python -c 'import torch, cumesh, flex_gemm, o_voxel, nvdiffrast; assert tuple(map(int, torch.__version__.split("+")[0].split(".")[:2])) >= (2, 8); assert torch.version.cuda == "12.8"; assert torch.cuda.is_available()'
 python -c 'import bpy; assert bpy.app.version[:3] == (4, 5, 1)'
+LOCAL_PATH=/root/node7/data/pixal3d
 $LOCAL_PATH/tools/blender-4.5.1-linux-x64/blender --version
 ```
 
@@ -428,10 +430,11 @@ container 내부 등록 GPU는 항상 ordinal `0`이다. 예를 들어 n7의 물
 
 ```bash
 # host에서 한 번, 검증된 runtime tree를 불변 image에 복사한다.
-SOURCE_ROOT=/file3/youngwoo/pixal3d-fast-release-87b58b4
-TESTED_CODE_COMMIT=87b58b49a07f91d0d7c069b11044a5881fade64f
-TESTED_RUNTIME_TREE=b7b315125600bbfa4d134a6f6e2987f12e9d6103
-PIXAL3D_FAST_IMAGE=pixal3d-fast:87b58b4
+SOURCE_ROOT=/file3/youngwoo/pixal3d-fast-release-b67c6b3
+TESTED_CODE_COMMIT=b67c6b371028952fe423c1379b408871e1941274
+TESTED_RUNTIME_TREE=489c3a256ff083872ff4fd1b18837e0544b766c2
+PIXAL3D_FAST_IMAGE=pixal3d-fast:b67c6b3
+BLENDER_TOOLS=/file3/youngwoo/pixal3d-n7-runtime/local/tools
 
 set -euo pipefail
 if [ ! -e "$SOURCE_ROOT" ]; then
@@ -445,6 +448,7 @@ git -C "$SOURCE_ROOT" checkout --detach "$TESTED_CODE_COMMIT"
 test "$(git -C "$SOURCE_ROOT" rev-parse HEAD)" = "$TESTED_CODE_COMMIT"
 test "$(git -C "$SOURCE_ROOT" rev-parse HEAD:data_toolkit)" = "$TESTED_RUNTIME_TREE"
 test -z "$(git -C "$SOURCE_ROOT" status --porcelain=v1 --untracked-files=all)"
+test -x "$BLENDER_TOOLS/blender-4.5.1-linux-x64/blender"
 docker build \
   --build-arg BASE_IMAGE=f1.unist.info:443/jhenv6@sha256:d373b9e28450f3a79dd917708bc81eaa0cdbb1638da82f310bd4e7721161d4ab \
   --build-arg PIXAL3D_RUNTIME_COMMIT="$TESTED_CODE_COMMIT" \
@@ -460,8 +464,10 @@ CPU_LIMIT=8
 docker run -d --name "youngwoo_diyscene_fast_${NODE_ID}" \
   --gpus "device=${N}" \
   -v /file2/youngwoo/pixal3d:/root/data2/pixal3d \
+  -v /file2/youngwoo/pixal3d/raw:/root/data2/pixal3d/raw:ro \
   -v /file3/youngwoo/pixal3d:/root/data3/pixal3d \
   -v "/file3/youngwoo/pixal3d-n7-runtime/local/gpu${N}:/root/node7/data/pixal3d" \
+  -v "$BLENDER_TOOLS:/root/node7/data/pixal3d/tools:ro" \
   "$PIXAL3D_FAST_IMAGE" sleep infinity
 
 docker exec "youngwoo_diyscene_fast_${NODE_ID}" bash -lc "
@@ -492,6 +498,9 @@ registry digest로 고정하며, 어느 검사든 실패하면 `set -e`로 image
 
 GPU 1--5도 `N`, `NODE_ID`, `CPU_LIMIT`만 바꿔 반복한다. 동일 node-id 또는 동일 local
 root를 두 container에 사용하면 worker lock 또는 scratch 충돌이 발생하므로 금지한다.
+상위 data2 mount는 queue/control 및 prepared output 때문에 read-write지만, 그 안의 원본
+`raw` dataset은 중첩된 read-only mount가 우선한다. 공용 Blender tool directory도
+read-only로 중첩 mount하므로 새 GPU별 local volume을 미리 채울 필요가 없다.
 
 같은 `node-id`/`local-root`에 worker를 두 번 실행하면 두 번째 프로세스는 비차단
 파일 잠금에서 즉시 실패한다. 비정상 종료 시 커널이 잠금을 자동 해제하므로 별도

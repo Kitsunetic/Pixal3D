@@ -1,14 +1,19 @@
 {
-  "command": "python -m data_toolkit.benchmark_quality render-reference-native-optix-fullres/renders_cond render-candidate-native-optix-eevee128-isolated-v2/renders_cond --rgb-policy diagnostic",
+  "host": "n7",
+  "runtime_commit": "b67c6b371028952fe423c1379b408871e1941274",
+  "runtime_tree": "489c3a256ff083872ff4fd1b18837e0544b766c2",
+  "command": "python -m data_toolkit.benchmark_quality render-reference-native-optix-fullres/renders_cond render-candidate-native-optix-eevee128-isolated-v2/renders_cond --rgb-policy diagnostic --expected-json 100 --expected-npz 0 --expected-png 800 --expected-vxz 0",
   "result": {
     "compared_npz": 0,
     "compared_png": 800,
     "compared_vxz": 0,
+    "expected_artifact_counts": {".json": 100, ".npz": 0, ".png": 800, ".vxz": 0},
     "failures": [],
     "max_latent_relative_l2": 0.0,
     "min_alpha_iou": 1.0,
     "min_rgb_psnr": 24.80914273662188,
     "passed": true,
+    "reference_artifact_counts": {".json": 100, ".npz": 0, ".png": 800, ".vxz": 0},
     "rgb_policy": "diagnostic"
   }
 }

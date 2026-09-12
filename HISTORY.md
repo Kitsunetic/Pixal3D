@@ -2049,3 +2049,18 @@ input은 processor에 넘기기 직전 열린 descriptor/member의 digest를 다
 파일 교체도 탐지한다. overlay image build는 build context 내부 Git commit, `data_toolkit` tree,
 clean status를 직접 검증하고 `bpy==4.5.1` wheel SHA-256을 고정한다. n7에서 이 exact runtime을
 새로 build해 GPU 0 smoke를 통과했으며 전체 test suite는 911 passed, warning 1개였다.
+
+최종 handoff 검토에서 양쪽에 동일한 일부 파일만 존재해도 comparator가 통과할 수 있는
+불완전-result case를 발견했다. frozen manifest에서 가져온 `.json/.npz/.png/.vxz` expected
+count를 모두 필수로 만들고, 누락·초과 산출물은 fail-closed 처리했다. 보존된 n7 결과에 새
+계약을 적용해 render 800 PNG+100 JSON과 latent 1,310 NPZ+1,310 JSON을 다시 통과시켰다.
+NFS fallback publish에는 candidate 파일/디렉터리 및 각 rename metadata의 `fsync` barrier를
+추가했고, 선택된 ZIP member에는 8 GiB 압축 해제 상한을 추가했다. 운영 runbook은 공용 Blender
+tools를 각 GPU-local root에 read-only 중첩 mount하고 data2의 원본 `raw` subtree 역시
+read-only로 중첩 mount하도록 수정했다. 이 최종 runtime은
+`b67c6b371028952fe423c1379b408871e1941274`이며 `data_toolkit` tree는
+`489c3a256ff083872ff4fd1b18837e0544b766c2`이다.
+전체 suite는 916 passed, warning 1개였다. 같은 commit으로 n7 overlay image를 새로 build해
+commit/tree marker, Git metadata 제거, `bpy`/external Blender 4.5.1, Torch 2.11.0+cu128,
+RTX 4090 한 장 노출 및 원본 raw mount의 read-only 상태를 확인하고 임시 image/container/build
+root를 제거했다.

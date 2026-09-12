@@ -1,11 +1,11 @@
 Command:
-/home/rvi/conda/envs/torch/bin/python -m pytest -q --basetemp=.pytest-release-87b58b4
+/home/rvi/conda/envs/torch/bin/python -m pytest -q --basetemp=.pytest-release-b67c6b3
 
 Runtime code commit:
-87b58b49a07f91d0d7c069b11044a5881fade64f
+b67c6b371028952fe423c1379b408871e1941274
 
 Result:
-911 passed, 1 warning in 127.08s (0:02:07)
+916 passed, 1 warning in 126.19s (0:02:06)
 
 Warning:
 tests/data_toolkit/test_view_transform_alignment.py::test_pbr_transform_matches_geometry_transform_and_quantized_support
