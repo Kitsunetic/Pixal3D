@@ -2402,3 +2402,25 @@ completed-output 복구는 attempt 5를 launch하지 않도록 수정했다. non
 4는 save/load 시 계속 fail-closed한다. post-budget repair와 checkpoint round-trip 회귀 테스트
 5개, 전체 orchestrator 213개, 전체 suite 932개가 통과했다. Ruff 전체-file 검사는 기존 파일의
 baseline 위반 47개를 보고했으나 이번 변경 라인에서 새 위반은 없었다.
+
+수정 commit `090b409fa6f8f0e8fe2f215ec0f1284dade826c9`, data_toolkit tree
+`15bd61a9aa0d27d6e1bc142f47aae2c4bfb299c6`를 master에 push하고 n7에서 exact detached source로
+image `pixal3d-fast:090b409`
+(`sha256:cbfecca685cc38b1047019f24f8dc2748d122a931a0ac74b6b74862385ccda6d`)를 build했다.
+claim 없는 image smoke의 marker/tree, Git metadata 제거, `bpy 4.5.1`과 post-budget 회귀 5개,
+GPU2 한 장만 노출한 smoke의 RTX 4090/Torch, native 및 external Blender 4.5.1, tools read-only
+mount를 모두 통과했다.
+
+GPU2부터 GPU0, GPU1, GPU3, GPU4, GPU5 순서로 각 node만 drain하고 active lease를
+`runtime-upgrade-090b409` 사유로 공식 handoff했다. 매번 해당 물리 GPU의 compute PID가 기존
+container cgroup에만 속하는지와 handoff 후 GPU가 비었는지 확인했으며 다른 사용자 process는
+변경하지 않았다. 기존 `456251c` container는 GPU별 `_456251c_backup` 이름의 stopped backup으로
+보존했다. 새 container는 모두 7-core quota, 32 GiB shm, restart policy `no`, one-visible GPU,
+raw/tools read-only mount와 claim 없는 실제 worker preflight를 통과했고, GPU0--5가 각각 기존
+batch003--008을 같은 local scratch로 다시 claim했다.
+
+rollout 직후 GPU2 batch005/chunk001의 `geometry_encode_bundle` attempt 4가 새 parser를 통해
+durable checkpoint에 정상 저장돼 실행 중인 것을 확인했다. 같은 supervisor log에는
+`invalid checkpoint`, batch release, traceback이 없었다. 따라서 합성 round-trip뿐 아니라 실제
+canonical post-budget repair에서도 attempt 4 persistence 결함이 제거됐으며, queue는 completed
+153, running 6, pending 597, failed/stale 0으로 복구됐다.
