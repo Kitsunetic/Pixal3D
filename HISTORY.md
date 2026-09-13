@@ -2187,3 +2187,12 @@ chunk의 완성된 8-view render 디렉터리가 82개에서 101개로 19개 증
 처리율은 aggregate 약 13.7초/asset, GPU당 환산 약 68.4초/asset이었다. 같은 구간 내내 다섯
 supervisor/worker process와 lease heartbeat가 유지됐고 queue는 failed/stale 0, 오류 로그도
 0건이었다. GPU0의 타 사용자 process는 계속 유지되어 재투입하지 않았다.
+
+07:30 UTC GPU3의 batch005/chunk003이 64개 asset render를 모두 완료하고 geometry/latent 단계로
+전환했다. `renders_cond` 아래 65번째 디렉터리는 asset이 아니라 renderer metadata용
+`new_records`였고, instances 64개와 asset render 이름은 extra/missing 없이 일치했다. authoritative
+chunk checkpoint의 `render.elapsed_seconds`는 3,196.48초로 49.95초/asset이었다. 이후
+`geometry_encode_bundle`이 view 0/1의 shape/PBR 256·512·1024를 생성하면서 latent encoder와
+producer/consumer 방식으로 겹쳐 실행됐다. 초기 4분 관측에서 geometry `.vxz`는 106개에서
+269개, latent는 0개에서 48개로 증가했다. container RSS는 9.45--12.51 GiB, encoder model 로드 후
+VRAM은 약 5.02 GiB였고 OOM/error는 없었다.
