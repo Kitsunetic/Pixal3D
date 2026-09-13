@@ -264,6 +264,8 @@ def test_commands_have_exact_parser_compatible_argv(config, tmp_path):
         *base,
         "--download_root",
         str(context.source_root),
+        "--record_root",
+        str(context.metadata_root / "download_records"),
         "--max_workers",
         "8",
         "--record_prefix",

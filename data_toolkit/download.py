@@ -138,6 +138,12 @@ def main(argv: list[str] | None = None) -> None:
         help="Directory to download the objects",
     )
     parser.add_argument(
+        "--record_root",
+        type=str,
+        default=None,
+        help="Writable directory for download records",
+    )
+    parser.add_argument(
         "--filter_low_aesthetic_score",
         type=float,
         default=None,
@@ -160,10 +166,11 @@ def main(argv: list[str] | None = None) -> None:
     if canonical_source is not None:
         opt.source = canonical_source
     opt.download_root = opt.download_root or opt.root
+    record_root = Path(opt.record_root or opt.download_root)
 
     os.makedirs(opt.root, exist_ok=True)
     os.makedirs(opt.download_root, exist_ok=True)
-    new_records = Path(opt.download_root) / "raw/new_records"
+    new_records = record_root / "raw/new_records"
     new_records.mkdir(parents=True, exist_ok=True)
 
     metadata_path = Path(opt.root) / "metadata.csv"
@@ -205,11 +212,10 @@ def main(argv: list[str] | None = None) -> None:
     downloaded = dataset_utils.download(
         metadata, output_dir=opt.download_root, **opt
     )
-    download_root = Path(opt.download_root)
     _publish_download_records(
-        download_root, opt.rank, downloaded, opt.record_prefix
+        record_root, opt.rank, downloaded, opt.record_prefix
     )
-    _merge_download_records(download_root)
+    _merge_download_records(record_root)
 
 
 if __name__ == "__main__":

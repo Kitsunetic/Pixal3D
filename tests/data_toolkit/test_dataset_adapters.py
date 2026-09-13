@@ -674,6 +674,44 @@ def test_download_adapter_imports_work_in_script_and_module_modes(invocation):
     assert result.returncode == 0, result.stderr
 
 
+def test_download_records_can_be_published_outside_read_only_input(
+    monkeypatch, tmp_path
+):
+    module = importlib.import_module("data_toolkit.download")
+    metadata_root = tmp_path / "metadata"
+    download_root = tmp_path / "input"
+    record_root = tmp_path / "records"
+    metadata_root.mkdir()
+    download_root.mkdir()
+    pd.DataFrame([{"sha256": "a" * 64}]).to_csv(
+        metadata_root / "metadata.csv", index=False
+    )
+
+    adapter = SimpleNamespace(
+        add_args=lambda parser: None,
+        download=lambda metadata, output_dir, **kwargs: metadata.assign(
+            local_path="raw/object.glb"
+        ),
+    )
+    monkeypatch.setattr(module, "_import_adapter", lambda name: adapter)
+
+    module.main(
+        [
+            "ABO",
+            "--root",
+            str(metadata_root),
+            "--download_root",
+            str(download_root),
+            "--record_root",
+            str(record_root),
+        ]
+    )
+
+    assert not (download_root / "raw/new_records").exists()
+    assert (record_root / "raw/new_records/part_0.csv").is_file()
+    assert (record_root / "raw/metadata.csv").is_file()
+
+
 def test_merge_preserves_existing_rows_and_updates_non_null_fields(tmp_path):
     module = importlib.import_module("data_toolkit.download")
     raw = tmp_path / "raw"

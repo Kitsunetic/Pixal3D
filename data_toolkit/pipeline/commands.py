@@ -498,6 +498,8 @@ def build_preprocessing_dag(
                 *base,
                 "--download_root",
                 str(context.source_root),
+                "--record_root",
+                str(context.metadata_root / "download_records"),
                 "--max_workers",
                 "8",
                 "--record_prefix",

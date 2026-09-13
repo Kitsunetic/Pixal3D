@@ -21,6 +21,8 @@ LABEL org.opencontainers.image.revision=${PIXAL3D_RUNTIME_COMMIT}
 LABEL org.pixal3d.runtime-tree=${PIXAL3D_RUNTIME_TREE}
 USER root
 WORKDIR /root/dev/Pixal3D-fast
+ENV PYTHONPATH=/root/dev/Pixal3D-fast
+ENV PIXAL3D_TOOL_COMMIT=${PIXAL3D_RUNTIME_COMMIT}
 COPY --from=verified-source /verified-source/ .
 RUN printf '%s\n' "${PIXAL3D_RUNTIME_COMMIT}" > .pixal3d-runtime-commit \
     && printf '%s\n' "${PIXAL3D_RUNTIME_TREE}" > .pixal3d-runtime-tree
