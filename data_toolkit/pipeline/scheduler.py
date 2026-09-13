@@ -125,7 +125,7 @@ class ChunkContext:
             output_root=self.output_root,
             batch_id=f"{self.parent.batch_id}_{self.chunk_id}",
             gate=self.parent.gate,
-            record_prefix=f"{self.chunk_id}_",
+            record_prefix=f"{self.parent.record_prefix}{self.chunk_id}_",
         )
 
 

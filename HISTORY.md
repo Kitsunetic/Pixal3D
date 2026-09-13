@@ -2208,3 +2208,20 @@ queue에서 기존 batch002 attempt 1을 다시 claim했고, 완료된 chunk000-
 보존된 batch002/chunk003의 `prepare_bundle`로 재개했다. queue는 completed 152, running 6,
 pending 598, failed/stale 0이며 여섯 container의 CPU quota 합계는 42 cores로 44-core 제한
 이내다.
+
+08:10 UTC 전후 병렬 `prepare_bundle` 감사에서 batch004/chunk000이 64개 render와 mesh/PBR
+dump를 모두 생성한 뒤에도 stage 완료로 인정되지 않고 chunk001로 넘어간 현상을 조사했다.
+chunk별 `ShardContext`가 parent의 전역 prefix를 버리고 `chunk000_`만 사용해, 서로 다른 batch의
+`asset_stats/new_records/part_chunk000_0.csv`가 같은 source metadata 경로에서 경쟁적으로
+교체되고 있었다. 실제 shared CSV의 63개 SHA는 batch003/chunk000과만 일치하고 동시에 실행된
+batch002/004/005/006/007과의 교집합은 0개여서 cross-batch overwrite를 확인했다.
+
+chunk record prefix가 parent의 `<shard>_<batch>_` namespace를 보존한 뒤 chunk id를 붙이도록
+수정하고, 같은 chunk id를 가진 두 parallel batch가 서로 다른 prefix를 생성하는 회귀 테스트를
+추가했다. 수정 전 테스트는 두 값이 모두 `chunk000_`여서 실패했고 수정 후에는
+`ABO-00000_batch003_chunk000_`와 `ABO-00000_batch004_chunk000_`를 확인했다. scheduler,
+commands, pipeline integration, orchestrator 관련 272개 테스트와 전체 925개 테스트가 통과했다.
+전체 suite의 최초 4개 Blender fixture 실패는 host `/tmp`가 `noexec`인 환경 때문임을 독립 실행
+fixture로 확인했으며, executable worktree-local `TMPDIR`에서는 모두 통과했다. 기존 in-flight
+chunk는 새 asset-stats part를 재생성하되 이미 검증 가능한 render/mesh/PBR 결과는 재사용할 수
+있어 canonical 산출물을 삭제하거나 덮어쓸 필요가 없다.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import replace
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -323,6 +324,45 @@ def test_chunk_context_scopes_all_shared_record_parts(tmp_path, config):
     for name in ("prepare_bundle", "geometry_encode_bundle"):
         argv = commands[name].argv
         assert argv[argv.index("--record_prefix") + 1] == "chunk000_"
+
+
+def test_chunk_record_prefix_is_unique_across_parallel_batches(tmp_path):
+    parent = replace(
+        ShardContext.for_test(tmp_path / "parent", "ABO", "ABO-00000"),
+        batch_id="batch003",
+        record_prefix="ABO-00000_batch003_",
+    )
+    assets = _assets(1)
+    parent.instances.parent.mkdir(parents=True, exist_ok=True)
+    parent.instances.write_text(f"{assets[0]}\n")
+    scheduler = ParallelChunkScheduler(
+        config_hash="c" * 64,
+        broker=NodeResourceBroker(cpu_limit=1, gpu_count=1),
+        executor=_TimelineExecutor(),
+        stages=_stages(),
+        checkpoint_root=tmp_path / "checkpoints",
+        chunk_assets=1,
+        max_chunks_in_flight=1,
+        promoter=lambda _parent, _chunk: None,
+        publisher=lambda _parent, _chunks: None,
+    )
+    chunk = scheduler.freeze_chunks(parent, assets)[0]
+    sibling = replace(
+        chunk,
+        parent=replace(
+            parent,
+            batch_id="batch004",
+            record_prefix="ABO-00000_batch004_",
+        ),
+    )
+
+    assert (
+        chunk.as_shard_context().record_prefix,
+        sibling.as_shard_context().record_prefix,
+    ) == (
+        "ABO-00000_batch003_chunk000_",
+        "ABO-00000_batch004_chunk000_",
+    )
 
 
 @pytest.mark.parametrize(
