@@ -2405,7 +2405,13 @@ def _open_directory_nofollow(path: Path, *, create: bool = False) -> int:
             except FileNotFoundError:
                 if not create:
                     raise
-                os.mkdir(component, 0o755, dir_fd=directory_fd)
+                try:
+                    os.mkdir(component, 0o755, dir_fd=directory_fd)
+                except FileExistsError:
+                    # Another worker may create the same shared parent after
+                    # our failed open. The no-follow directory open below is
+                    # still the authority for accepting or rejecting it.
+                    pass
                 next_fd = os.open(component, flags, dir_fd=directory_fd)
             os.close(directory_fd)
             directory_fd = next_fd

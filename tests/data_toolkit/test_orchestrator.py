@@ -3750,6 +3750,28 @@ def test_checkpoint_parent_symlink_is_never_followed(isolated_config, tmp_path):
     assert not (outside / "checkpoint.json").exists()
 
 
+def test_checkpoint_parent_creation_accepts_concurrent_directory_winner(
+    isolated_config, tmp_path, monkeypatch
+):
+    checkpoint_path = tmp_path / "shared" / "nested" / "checkpoint.json"
+    runner = PipelineRunner(isolated_config, FakeResourceGuard(), {}, {})
+    real_mkdir = orchestrator_module.os.mkdir
+
+    def peer_wins_mkdir(path, mode=0o777, *, dir_fd=None):
+        real_mkdir(path, mode, dir_fd=dir_fd)
+        raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), path)
+
+    monkeypatch.setattr(orchestrator_module.os, "mkdir", peer_wins_mkdir)
+
+    runner.save_checkpoint(
+        checkpoint_path, PipelineCheckpoint("ABO-00000")
+    )
+
+    assert runner.load_checkpoint(checkpoint_path, "ABO-00000") == (
+        PipelineCheckpoint("ABO-00000")
+    )
+
+
 def test_raw_metadata_parent_symlink_is_never_followed(
     isolated_config, tmp_path
 ):
