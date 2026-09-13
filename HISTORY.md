@@ -2173,3 +2173,11 @@ active chunk에서 완성된 8-view render 디렉터리는 약 5분 동안 34개
 제외되지만 이후 geometry/latent 및 canonical publish 시간은 포함하지 않는다. 각 renderer는
 `native_worker_max_assets=8` 경계에서 child를 정상 교체했고 supervisor/lease heartbeat와 산출물
 갱신이 계속됐으며 오류는 0건이었다.
+
+07:03 UTC 장기 실행 resource 감사에서 data2는 28 TiB, data3와 worker-local scratch filesystem은
+18 TiB가 남아 있었고, 다섯 active scratch 합계는 약 15.3 GiB였다. available RAM은 150 GiB,
+I/O PSI는 `avg10=0.01`, vmstat iowait는 0%라 storage/RAM gate는 안전했다. 우리 다섯 container의
+CPU 사용량 합계는 약 34.3 cores로 35-core quota 안이었다. 반면 host load average는 약 215,
+CPU PSI `some avg60`은 약 93%로 타 사용자 CPU workload와 강한 경합이 관측됐다. 이는 낮은 GPU
+utilization과 production render 처리율에 영향을 주는 외부 요인이지만, 다른 사용자 작업은
+변경하지 않고 현재 worker 수와 quota를 유지했다.
