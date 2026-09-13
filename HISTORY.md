@@ -2449,3 +2449,27 @@ suite `932 passed, 1 warning in 119.72s`를 통과했으며 warning은 기존 `t
 handoff` 명령을 실행한 manual smoke도 running 0/pending 1, active attempt 제거, remediation
 evidence 생성까지 확인했다. production GPU3 node는 현재 batch006 lease가 끝날 때까지
 `draining`으로 두어 새 unit claim과 checkpoint 복구가 경쟁하지 않도록 했다.
+
+14:27 UTC GPU ownership watcher가 다른 사용자의 `/gs_anigauss` container가 GPU 0, 3, 4, 5에서
+학습을 시작한 것을 감지했다. 외부 process/container는 변경하지 않고 해당 네 Pixal3D node만
+drain한 뒤 우리 container를 중지했다. 방금 수정한 exact source를 기존 image에 read-only
+mount한 claim 없는 CLI container로 각 lease를 공식 handoff했다. schema 2 evidence는
+batch003의 active command 2개, batch006의 1개, batch007의 2개, batch008의 2개 등 총 7개의
+중단 attempt를 각각 한 번 환급했다. 이후 queue는 completed 153, running 2(GPU 1·2), pending
+601, failed/stale 0이었고 GPU 0·3·4·5에는 외부 학습 process만 남았다.
+
+모든 worker를 잠시 draining으로 만들어 새 claim을 차단하고, lease가 없는 batch006/chunk001의
+`prepare_bundle` attempt만 `3 -> 0`으로 복구했다. 세 attempt가 각각 GPU5/GPU4/GPU3에서 정상
+파일 생성 중 runtime cutover로 중단됐다는 앞선 mtime/handoff 증거와 checkpoint의
+`active_attempt=null`, `completed_commands=[stage_raw]`, 빈 quality outcome을 모두 precondition으로
+검사했다. 원본과 전후 SHA-256은
+`control/runtime/work_queue/remediated/n7-handoff-attempt-recovery-20260913T1440Z`에 보존했으며,
+복구 후에도 batch006 lease가 생기지 않은 것을 확인한 뒤 GPU 1·2를 다시 활성화했다.
+
+수정 commit `60de7fe5`, documentation commit `54bc0fce340a7a4ea5ff04215bf3ed1b9db0f666`,
+data_toolkit tree `c48c1d22f16cef729ee592f86246997c9d9c7cd6`를 master에 push했다. n7의 clean detached
+source에서 image `pixal3d-fast:54bc0fc`
+(`sha256:7d6eb6aa3505b13627dfd1ca2c8e6be97b1ae1283a3f1f89a45402e784a9c3ca`)를 build했다. image
+label/marker, Git metadata 제거, `bpy 4.5.1 LTS`, canonical handoff 회귀 3개를 claim 없는 smoke로
+확인했다. GPU smoke와 stopped node 재개는 GPU 0·3·4·5의 외부 학습이 끝나 빈 상태가 두 번
+연속 관측된 뒤에만 수행하도록 monitor를 교체했다.
