@@ -2473,3 +2473,22 @@ source에서 image `pixal3d-fast:54bc0fc`
 label/marker, Git metadata 제거, `bpy 4.5.1 LTS`, canonical handoff 회귀 3개를 claim 없는 smoke로
 확인했다. GPU smoke와 stopped node 재개는 GPU 0·3·4·5의 외부 학습이 끝나 빈 상태가 두 번
 연속 관측된 뒤에만 수행하도록 monitor를 교체했다.
+
+15:32--15:41 UTC GPU 0·3·4·5가 compute process 없이 비어 있는 상태를 30초 이상 간격으로
+두 번 확인했다. 중지된 `090b409` container는 삭제하지 않고 GPU별 `_090b409_backup`으로
+보존하고, 같은 local scratch와 canonical data2/data3 mount를 사용하는
+`pixal3d-fast:54bc0fc` one-visible-GPU container를 새로 생성했다. 네 container 모두 exact
+image revision/tree, Git metadata 제거, Torch가 인식하는 단일 RTX 4090, native/external
+Blender 4.5.1 LTS, raw/tools read-only mount, 7-core quota, 32 GiB shm와 draining 상태의 claim
+없는 실제 `worker --once`를 통과했다. node를 하나씩 활성화해 GPU0/3/4/5가 각각 기존
+batch003/006/007/008을 원래 worker-local scratch에서 재claim한 것을 확인했고, queue는
+completed 153, running 6, pending 597, failed/stale 0으로 복구됐다.
+
+15:42 UTC cgroup ownership monitor가 다른 사용자의 `gs_anigauss` container가 GPU 0에 다시
+진입한 것을 감지했고, 수동 교차 확인 중 GPU 3 진입도 이어서 확인했다. 외부 process와
+container는 변경하지 않고 node7-gpu0/3만 drain하고 해당 Pixal3D container를 중지했다.
+`54bc0fc`의 수정된 canonical handoff 명령으로 batch003/006 lease를 각각 반환해 중단된
+command attempt를 환급했다. GPU 1·2·4·5의 네 worker는 계속 실행 중이며 15:45 UTC queue는
+completed 153, running 4, pending 599, failed/stale 0, active CPU quota 합계 28 cores였다.
+모니터는 이 네 GPU의 container cgroup 소유권과 queue failure/staleness를 검사하고 GPU 0·3의
+연속 free 상태를 기다리도록 갱신했다.
