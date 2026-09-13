@@ -2515,3 +2515,59 @@ GPU3의 batch006 scratch를 read-only source로 GPU0의 존재하지 않던 targ
 claim했으며 queue는 completed 153, running 6, pending 597, failed/stale 0으로 복구됐다.
 6-GPU cgroup ownership monitor도 다시 시작했고 직후 container CPU quota 합계 42 cores,
 실측 약 13.8 cores, RSS 약 31.2 GiB였으며 worker 최대 VRAM은 GPU2 약 23.2 GiB였다.
+
+## 2026-09-13 — rolling quality gate 재발 격리와 batch002/005 복구 시작
+
+17:13:50 UTC node7-gpu2의 batch005가 attempt 3에서
+`end-to-end failures exceed 10% (309/500)`으로 terminal failed가 됐다. 새 unit claim을 막기 위해
+node7-gpu0--5를 모두 draining으로 바꾸고 우리 six production container만 중지한 뒤, 당시 active
+lease인 batch003/004/006/007/008/012를 `quality-gate-recovery-20260913` 사유로 공식 handoff했다.
+각 token과 중단 attempt 환급 evidence를 보존했으며 다른 사용자의 process/container는 변경하지
+않았다. containment 후 canonical queue는 completed 153, pending 602, failed 1(batch005),
+running/stale 0이었다.
+
+실패는 최근 leaf retry 수가 아니라 source별 500-asset rolling ledger였다. 해당 window는 batch002
+failure 244건과 batch005 completed 191/failure 65건으로 구성됐다. canonical parent/chunk를 다시
+대조하면 batch002는 256/256이 모두 generic `asset output failed validation`으로 격리된 채 빈 pack을
+publish했고, batch005는 chunk000 64건과 chunk001 1건이 같은 generic failure, 나머지 191건이
+completed였다. 의심 asset 321개 모두 canonical metadata와 non-empty GLB가 존재했고 원본 합계는
+4,470,424,448 bytes였다. 따라서 quality threshold를 완화하지 않고 실제 재처리로 false failure를
+판별하기로 했다.
+
+canonical과 분리된
+`/file2/youngwoo/pixal3d-quality-recovery-n7-20260913`,
+`/file3/youngwoo/pixal3d-quality-recovery-n7-20260913`,
+`/file3/youngwoo/pixal3d-n7-runtime/quality-recovery-20260913`을 만들었다. metadata/checkpoint/output은
+이 root에만 쓰고 canonical ObjaverseXL GLB와 Blender tools는 read-only bind했다. registry는
+training 321개와 evaluation 1개로 생성했다. 일반 preflight는 configured source와 무관하게 모든
+dataset을 검사하는 기존 동작 때문에 HSSD token 및 3D-FUTURE/Toys4k manual archive에서 blocked였으나,
+실제 one-visible-GPU hardware preflight는 Blender 4.5.1, CUDA 12.8, Torch 2.11.0+cu128,
+OPTIX, CPU fallback 없음으로 passed였다. 1 GiB fixture 기준 data2 쓰기 50.82 MiB/s,
+data3/local 쓰기 216.17/210.74 MiB/s였고 모든 fixture는 제거됐다.
+
+batch002, batch005/chunk000, batch005/chunk001에서 각각 1개를 end-to-end smoke로 실행했다.
+앞의 두 asset은 canonical failure였지만 현재 코드에서 모든 output/pack을 정상 생성했고 final
+8-view render는 각각 237.97초와 414.05초였다. 마지막 `09b4609f...`는 mesh dump 662.41초,
+PBR dump 446.38초 뒤 final render가 900초 제한에 도달해 재현 가능하게 timeout됐다. 이 1건은
+genuine quarantine으로 유지하고 나머지 320건만 복구 대상으로 확정했다. 실패-only smoke pack은
+삭제하지 않고 sibling diagnostics root로 18개 경로/24개 파일과 move manifest를 보존했다.
+성공한 두 smoke의 registry/frozen scope/pack/raw archive/checksum report는 config hash
+`578e495f...d08d911`로 passed했다. 별도 batch002 pilot 1개도 render 164.47초를 포함한 전체
+pipeline과 같은 hash의 report를 통과했다.
+
+320개를 64개씩 다섯 recovery shard로 처음 병렬 실행할 때 shared checkpoint parent를 동시에
+생성한 shard2 하나가 `FileExistsError`로 leaf launch 전에 종료됐다. no-follow directory walker가
+`open(ENOENT)` 직후 다른 worker가 directory를 만든 정상 race를 unsafe destination으로 오판한
+것이 원인이었다. concurrent winner를 허용한 뒤 같은 `O_DIRECTORY|O_NOFOLLOW` open으로 최종
+검증하도록 수정했고, failing-first race test와 기존 symlink rejection tests를 포함한 focused
+225 tests가 통과했다. 전체 suite는 929 passed였고 `/tmp` noexec 때문에 실패한 Blender fixture
+4개는 executable workspace basetemp에서 4/4 통과했다. 수정 commit은 `836563b`이며 fork의
+master와 production branch에 push했다.
+
+초기 five-shard 준비 단계는 cgroup CPU 합계가 35 cores로 44-core 상한 이내였지만 Blender와
+filesystem worker가 동시에 늘며 host load1이 156까지 올라갔다. shard2--4를 중지해 scratch와
+checkpoint를 보존하고 shard0--1부터 처리했으며, 이후 load가 내려간 뒤 shard2를 config identity를
+유지하는 CPU 5/render 1/dump 5 profile로 resume했다. 강제 중지 때 생긴 비어 있는 임시 mesh
+pickle 2개는 resume validator가 제거했고 유효 mesh 7개부터 재개했다. 세 active container의
+cgroup quota는 각각 4 cores, 합계 12 cores로 낮춰 load1을 72 아래에서 유지하고 있다. canonical
+queue와 pack/quality ledger는 격리 복구·감사가 끝날 때까지 변경하지 않는다.
