@@ -2154,3 +2154,12 @@ failed/stale 0이고 초기 오류는 없었다. GPU4는 production에 사용하
 검증을 통과한 뒤에만 활성화했다. GPU4 worker는 reset된 batch007을 attempt 1로 claim해 running
 상태에 진입했고 초기 오류는 없었다. 여섯 container의 CPU quota 합계는 42 cores로 physical
 44-core 제한 이내이며 restart policy는 모두 `no`다.
+
+06:51 UTC GPU process ownership 감사에서 타 사용자 `inha`의 별도 작업이 GPU0에 새로 진입해
+우리 renderer와 같은 물리 GPU를 공유하는 것을 발견했다. 타 사용자 process/container는 변경하지
+않고 `node7-gpu0`만 registry draining으로 전환하고 전용 container를 중지한 뒤, 실행 중이던
+batch002 lease를 `gpu0-released-for-other-user` 사유로 공식 handoff했다. GPU0에는 타 사용자
+process만 남았음을 확인했고 우리 container는 restart policy `no` 상태로 stopped다. batch002의
+기존 chunk003 scratch/checkpoint는 삭제하지 않아 다음 worker가 이어받을 수 있다. 철수 직후 queue는
+completed 152, running 5, pending 599, failed/stale 0이며 활성 production CPU quota 합계는
+35 cores다.
