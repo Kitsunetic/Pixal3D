@@ -262,24 +262,27 @@ def test_parallel_raw_metadata_uses_parent_copy_after_chunk_promotion(
     isolated_config, shard_context
 ):
     completed = "a" * 64
+    contents = b"promoted raw input"
     parent = replace(shard_context, gate="production")
     parent.instances.parent.mkdir(parents=True, exist_ok=True)
     parent.instances.write_text(f"{completed}\n")
     runner = RecordingRunner(isolated_config)
     runner.checkpoint.quality_outcomes = {completed: "completed"}
     services = PipelineServices(isolated_config, runner=runner)
-    parent_metadata = parent.download_root / "raw/metadata.csv"
-    parent_metadata.parent.mkdir(parents=True, exist_ok=True)
+    source_metadata = parent.source_root / "raw/metadata.csv"
+    source_metadata.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
         [
             {
                 "sha256": completed,
                 "local_path": f"raw/{completed}.glb",
-                "content_sha256": completed,
+                "content_sha256": sha256(contents).hexdigest(),
                 "companion_files": "{}",
             }
         ]
-    ).to_csv(parent_metadata, index=False)
+    ).to_csv(source_metadata, index=False)
+    source_asset = parent.source_root / f"raw/{completed}.glb"
+    source_asset.write_bytes(contents)
     child_instances = parent.work_root / "chunks/chunk000/instances.txt"
     child_instances.parent.mkdir(parents=True, exist_ok=True)
     child_instances.write_text(f"{completed}\n")
@@ -293,8 +296,10 @@ def test_parallel_raw_metadata_uses_parent_copy_after_chunk_promotion(
 
     services._write_parallel_raw_metadata(parent, (chunk,), executor)
 
+    parent_metadata = parent.download_root / "raw/metadata.csv"
     records = services._read_raw_records(parent_metadata, (completed,))
     assert tuple(record["sha256"] for record in records) == (completed,)
+    assert (parent.download_root / f"raw/{completed}.glb").read_bytes() == contents
 
 
 def test_build_packs_creates_empty_output_root_for_quarantined_batch(

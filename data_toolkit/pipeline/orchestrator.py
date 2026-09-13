@@ -3724,12 +3724,19 @@ class PipelineServices:
                 if not isinstance(error.__cause__, FileNotFoundError):
                     raise
                 if parent_records is None:
-                    parent_records = {
-                        record["sha256"]: record
-                        for record in self._read_raw_records(
-                            parent.download_root / "raw/metadata.csv",
-                            completed,
+                    try:
+                        records_from_parent = self._read_raw_records(
+                            parent.download_root / "raw/metadata.csv", completed
                         )
+                    except ValidationError as parent_error:
+                        if not isinstance(parent_error.__cause__, FileNotFoundError):
+                            raise
+                        self._stage_raw_assets(parent, completed)
+                        records_from_parent = self._read_raw_records(
+                            parent.download_root / "raw/metadata.csv", completed
+                        )
+                    parent_records = {
+                        record["sha256"]: record for record in records_from_parent
                     }
                 chunk_records = tuple(
                     parent_records[asset] for asset in chunk_completed
@@ -4452,8 +4459,9 @@ class PipelineServices:
         zip_value = _zip_parts(relative)
         return zip_value[0] if zip_value is not None else relative
 
-    def stage_raw(self, context: ShardContext) -> None:
-        selected = self._eligible_assets(context)
+    def _stage_raw_assets(
+        self, context: ShardContext, selected: tuple[str, ...]
+    ) -> None:
         records = self._read_raw_records(
             context.source_root / "raw/metadata.csv", selected
         )
@@ -4502,6 +4510,9 @@ class PipelineServices:
         self._write_raw_records(
             context.download_root / "raw/metadata.csv", records
         )
+
+    def stage_raw(self, context: ShardContext) -> None:
+        self._stage_raw_assets(context, self._eligible_assets(context))
 
     def _staged_records(self, context: ShardContext) -> tuple[dict, ...]:
         return self._read_raw_records(
