@@ -2492,3 +2492,14 @@ command attempt를 환급했다. GPU 1·2·4·5의 네 worker는 계속 실행 �
 completed 153, running 4, pending 599, failed/stale 0, active CPU quota 합계 28 cores였다.
 모니터는 이 네 GPU의 container cgroup 소유권과 queue failure/staleness를 검사하고 GPU 0·3의
 연속 free 상태를 기다리도록 갱신했다.
+
+15:47--15:50 UTC GPU 3의 외부 compute process가 사라진 상태를 30초 이상 간격으로 다시
+확인했다. 기존 `54bc0fc` GPU3 container를 시작해 exact marker, 단일 RTX 4090,
+native Blender 4.5.1과 claim 없는 worker smoke를 재확인한 뒤 node를 활성화했다. scheduler는
+반환된 unit 중 queue 선두인 batch003을 node7-gpu3에 배정했다. canonical completed checkpoint는
+계속 skip되지만 GPU0 local scratch의 미완료 중간물은 GPU3에서 보이지 않으므로 그 부분만 다시
+실행될 수 있다. 결과 계약에는 영향이 없고 GPU를 유휴 상태로 두는 것보다 완료 시간이 짧아지는
+방향이라 lease를 유지했다. 16:06 UTC queue는 completed 153, running 5, pending 598,
+failed/stale 0이었다. 10분 자원 표본의 container CPU 합계는 약 11.8 cores(설정 상한 35), RSS
+합계는 약 28.7 GiB였고 worker 최대 VRAM은 GPU3 약 7.6 GiB였다. GPU0은 외부 작업에 계속
+양보한 채 draining/stopped 상태로 유지했다.
