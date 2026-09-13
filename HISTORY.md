@@ -2096,3 +2096,22 @@ native OPTIX render에 정상 진입했다. 초기 관측에서 container CPU는
 cores, RSS는 약 5.3 GiB, GPU 5 VRAM은 약 1.0--3.4 GiB였으며 Cycles render 시 GPU activity를
 확인했다. canonical queue와 최종 output은 기존 `/file2/youngwoo/pixal3d` 및
 `/file3/youngwoo/pixal3d` 계약을 그대로 사용하고 이미 completed인 152개 unit은 건너뛴다.
+
+05:07 UTC에 타 사용자 작업이 끝나 GPU 0/1이 비었지만, 신규 worker의 claim 전 검증에서 기존
+n7 hardware report가 생성 후 87,036초 경과해 24시간 freshness 한도를 넘은 것을 탐지했다.
+host/container clock skew나 report/evidence 불일치는 없었다. 신규 node는 즉시 draining으로
+되돌렸고 lease는 생성되지 않았다. 이후 GPU 2/3도 비어 active production GPU가 0/1/2/3/5가
+됐다. 기존 evidence와 smoke/pilot report는
+`control/recovery/n7-hardware-refresh-20260913T0511Z` 및
+`control/recovery/n7-hardware-refresh-expand-20260913T0517Z`에 순서대로 보존했다.
+
+GPU 0/1/2/3/5만 노출한 임시 container에서 다섯 RTX 4090의 isolated OPTIX cube와 local/data2/
+data3 1 GiB checksum I/O를 다시 측정했다. 새 hardware report는 GPU 5개, decision `passed`,
+canonical config hash를 기록하며 smoke와 pilot evidence도 공식 `refresh_gate_evidence()` API로
+재발행한 뒤 모두 read-back `passed`를 확인했다. 임시 container와 storage fixture는 제거했다.
+각 GPU별 no-claim 검증에서 visible GPU 1개, held report GPU 5개, environment/hardware decision과
+config hash 일치를 확인한 뒤 GPU 0/1/2/3 worker를 추가했다. 05:28 UTC queue는 completed 152,
+running 5(batch002--006), pending 599, failed/stale 0이며 각 container CPU quota는 7 cores라
+총 상한은 35 physical cores다. GPU 4의 타 사용자 process는 건드리지 않았다. 모든 production
+container는 host 재시작 뒤 GPU 점유를 재확인하지 않고 자동 실행되지 않도록 restart policy를
+`no`로 유지한다.
