@@ -2298,3 +2298,21 @@ worktree-local `TMPDIR` 때문에 Python이 host의 noexec `/tmp`로 fallback한
 실행 가능한 temp directory를 다시 만든 뒤 해당 4개와 전체 suite가 통과했다. 같은 시점의
 production queue는 completed 153, running 6, pending 597, failed/stale 0으로 유지됐고
 09:19--09:26 UTC의 render transforms는 여섯 batch 합계 254개에서 274개로 증가했다.
+
+수정 commit `456251c443270614e02bfb1920bd2d6680cc6aa0`, data_toolkit tree
+`3bf6c5f7bc8365ce63ff9a4db7cef64c36178f56`를 master와 production branch에 push하고 n7에서
+image `pixal3d-fast:456251c`
+(`sha256:e954f68ed50f0d6946697210bfe4578832e053a3758a955dd720d244e040d2e9`)로 build했다.
+image label/marker, Git metadata 제거, `bpy 4.5.1`과 완료-output 복구/prefix 회귀 5개를 격리
+code smoke로 확인했다. 모든 active GPU process가 기존 Pixal3D container cgroup 소유인 것을
+확인한 뒤 여섯 node를 drain하고 active lease를 `runtime-upgrade-456251c` 사유로 공식 handoff했다.
+queue가 completed 153, pending 603, running/failed/stale 0인 상태에서만 기존 container를
+`_671d7a2_backup` 이름의 stopped backup으로 보존했다.
+
+GPU0 실제 one-visible-GPU smoke와 GPU 0--5별 새 container의 exact runtime/tree, 7-core quota,
+32 GiB shared memory, restart policy `no`, Torch GPU 1개, native/external Blender 4.5.1,
+raw/tools read-only mount 및 claim 없는 worker를 모두 통과시켰다. worker-local partial state를
+다른 GPU에 배치하지 않도록 supervisor를 순차 시작해 GPU0--5가 각각 기존 batch003--008을
+다시 claim했는지 lease owner를 하나씩 확인했다. 재개 queue는 completed 153, running 6,
+pending 597, failed/stale 0이었고 supervisor 오류는 없었다. batch005/chunk001은 handoff 전
+산출물을 보존해 재개 직후 mesh 63, PBR 42, transforms 14, PNG 124개로 계속 증가했다.
