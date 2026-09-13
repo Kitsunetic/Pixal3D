@@ -2349,3 +2349,11 @@ chunk command는 계속 살아 있고 다음 asset의 PNG가 증가하므로 wor
 아닌 개별 입력 품질 문제로 분류했다. prepare 종료 후 validator가 이 asset만 terminal quality
 failure로 격리하는지 감시 중이며, 확인 전에는 worker를 재시작하거나 canonical output을
 수정하지 않는다.
+
+10:23 UTC에 GPU2의 batch005/chunk001 post-budget repair가 production에서 완료됐다.
+`pipeline.json`은 `stage_raw`, `prepare_bundle`, `geometry_encode_bundle`, 세 해상도 voxel cleanup,
+`validate_outputs`를 모두 completed command로 기록했고, quality outcome은 복구 대상 성공 asset
+63개 `completed`와 기존 입력 불량 asset 1개 `failure`였다. worker는 lease를 유지한 채 즉시
+batch005/chunk002의 eligible repair set으로 넘어가 3개 mesh dump, 3개 PBR dump와 native
+renderer를 시작했다. 따라서 완료 출력 누락을 복원하면서 기존 terminal failure는 재처리하지
+않는 `456251c`의 production 계약이 실제 canonical resume에서도 확인됐다.
