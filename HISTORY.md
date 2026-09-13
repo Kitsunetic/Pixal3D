@@ -2163,3 +2163,13 @@ process만 남았음을 확인했고 우리 container는 restart policy `no` 상
 기존 chunk003 scratch/checkpoint는 삭제하지 않아 다음 worker가 이어받을 수 있다. 철수 직후 queue는
 completed 152, running 5, pending 599, failed/stale 0이며 활성 production CPU quota 합계는
 35 cores다.
+
+자원 기준선은 여섯 worker가 동시에 prepare/render하던 20초 구간에서 GPU별 평균 utilization
+0.3--5.8%, 최대 4--39%, 평균 VRAM 2.2--3.0 GiB, 최대 VRAM 3.3--4.1 GiB였다. container CPU는
+합계 약 41.4 cores로 42-core quota 안에 있었다. 이는 end-to-end asset 완료 시간이 아니라 CPU
+mesh/PBR dump와 native Cycles가 겹치는 prepare 구간의 표본이다. GPU0 철수 후 GPU 1--5의 동일
+active chunk에서 완성된 8-view render 디렉터리는 약 5분 동안 34개에서 48개로 증가했다. 이 render
+단계 관측 처리율은 aggregate 약 21.4초/asset, GPU당 환산 약 106.8초/asset이며 초기 raw staging은
+제외되지만 이후 geometry/latent 및 canonical publish 시간은 포함하지 않는다. 각 renderer는
+`native_worker_max_assets=8` 경계에서 child를 정상 교체했고 supervisor/lease heartbeat와 산출물
+갱신이 계속됐으며 오류는 0건이었다.
