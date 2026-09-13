@@ -2064,3 +2064,35 @@ read-only로 중첩 mount하도록 수정했다. 이 최종 runtime은
 commit/tree marker, Git metadata 제거, `bpy`/external Blender 4.5.1, Torch 2.11.0+cu128,
 RTX 4090 한 장 노출 및 원본 raw mount의 read-only 상태를 확인하고 임시 image/container/build
 root를 제거했다.
+
+## 2026-09-13 — n7 canonical production 재개
+
+기존 `youngwoo_diyscene_fast_n7`과 다른 사용자 작업은 변경하지 않고, 비어 있던 n7 물리 GPU 5만
+노출하는 `youngwoo_diyscene_fast_node7-gpu5` container를 생성했다. CPU quota는 7 cores로
+제한했으며 canonical data2/data3는 기존 경로를 사용하고, `/root/data2/pixal3d/raw`와 공용
+Blender tools는 중첩 read-only mount했다. worker별 scratch는
+`/file3/youngwoo/pixal3d-n7-runtime/local/gpu5`로 분리했다.
+
+최초 immutable image 실행에서는 세 가지 production blocker를 발견했다. raw가 read-only인데
+Objaverse download record를 raw 아래에 기록하던 동작은 writable metadata root로 분리했고
+(`d35a48e`), mutable 기존 container에만 수동 설치돼 있던 `objaverse==0.1.7`과
+`GPUtil==1.4.0`을 hash-pinned image dependency로 명시했다(`2ef2aa4`). 그 뒤 worker-local
+`gpu_count=1`을 공유 hardware report의 수집 topology에도 적용해 6-GPU n7 evidence를 거부하는
+문제를 수정했다(`ab00bba`). 최초 report 생성은 configured GPU count를 계속 엄격히 검사하고,
+이미 고정된 report를 읽을 때만 evidence 자체의 GPU inventory로 재검증한다. worker가 실제로
+한 GPU만 볼 수 있는지는 별도 environment preflight가 그대로 검사한다.
+
+GPU-count 오류가 attempt 3까지 진행된 batch002는 실패 marker와 history를
+`control/runtime/work_queue/remediated/n7-hardware-report-worker-mismatch-20260913`에 보존한 뒤
+retry했고, 다음으로 claim된 batch003은 preprocessing 시작 전에 정식 operator handoff했다.
+복구 직후 queue는 completed 152, pending 604, running/failed/stale 0이었다. 새 image
+`pixal3d-fast:ab00bba`는 commit `ab00bba6362588cdcc0596cfe074b3cb89c6e12e`, data_toolkit tree
+`bdae9d59c25fd3f672beda3709cdba5055e145aa`로 고정됐다. 전체 test suite는 executable basetemp에서
+920 passed, warning 1개였고, claim 없는 n7 preflight에서 worker GPU 1, held-report GPU 6,
+decision passed와 canonical config hash 일치를 확인했다.
+
+04:37 UTC에 canonical queue를 재개했다. batch002가 attempt 1로 claim되어 prepare 단계와
+native OPTIX render에 정상 진입했다. 초기 관측에서 container CPU는 quota 범위인 약 6.5--6.9
+cores, RSS는 약 5.3 GiB, GPU 5 VRAM은 약 1.0--3.4 GiB였으며 Cycles render 시 GPU activity를
+확인했다. canonical queue와 최종 output은 기존 `/file2/youngwoo/pixal3d` 및
+`/file3/youngwoo/pixal3d` 계약을 그대로 사용하고 이미 completed인 152개 unit은 건너뛴다.
