@@ -2257,3 +2257,28 @@ quality outcome을 후보에서 제외해 기존 `completed` asset의 누락 파
 terminal outcome을 바꾸지 않은 채 성공 asset만 재생성 대상으로 전달함을 확인했다. 관련
 orchestrator/scheduler/commands/integration 302개와 전체 927개 테스트가 통과했으며 기존
 `torch.cross` warning 1개 외에는 경고나 실패가 없었다.
+
+복구 수정은 commit `671d7a29e919bec4b1d63238a4cc0e3022363d0f`, data_toolkit tree
+`c3161c66d50b6dc6b15cbb856c212996020e46ea`로 master와 production branch에 push했다. n7에서
+exact detached source로 image `pixal3d-fast:671d7a2`
+(`sha256:d21f470b543913ead0881679e1437fc8bcf568ff9b3f1d2c9ce10fac1229ac36`)을 build하고,
+image marker/label, `bpy 4.5.1`, 두 복구 회귀와 prefix 회귀를 통과시켰다. 여섯 node를 모두
+draining으로 만든 후 active lease 6개를 `runtime-upgrade-671d7a2` 사유로 공식 handoff해
+completed 153, pending 602, failed 1, running/stale 0 상태를 확인했다. 이전 image container는
+삭제하지 않고 `_7869c38_backup` 이름의 stopped backup으로 보존했다.
+
+새 image는 GPU 0--5 각각에 one-visible-GPU container로 배치했다. 각 container의 7-core quota,
+32 GiB shared memory, restart policy `no`, exact runtime marker/tree, Torch GPU 1개,
+native/external Blender 4.5.1, raw/tools read-only mount 및 draining 상태의 claim 없는 실제 worker를
+모두 검증했다. batch005 실패 이력은
+`control/runtime/work_queue/remediated/n7-completed-output-repair-20260913T0910Z`에 보존하고
+retry했다. supervisor 재개 후 batch003--008이 GPU 0--5에 attempt 1로 claim됐고 queue는
+completed 153, running 6, pending 597, failed/stale 0이었다.
+
+GPU2의 batch005/chunk001은 기존 failure 1개를 제외하고 이전 성공 63개를 정확히 담은
+`control/eligible/prepare_bundle.txt`로 복구 실행에 진입했다. 이전 실패 뒤 local render output은
+보존돼 있지 않아 chunk001/002의 transforms와 8-view PNG set이 모두 0개였으므로 이 두 chunk는
+전량 재생성이 필요하다. dump_mesh 3개, dump_pbr 3개와 native OPTIX renderer 1개가 실제로
+병렬 실행되는 것을 확인했다. 재개 직후 여섯 container CPU는 각각 약 6.36--7.04 cores,
+RSS는 4.64--5.68 GiB였고 GPU2 render 표본은 utilization 36%, VRAM 3.36 GiB였다. 모든 lease
+heartbeat가 유지됐고 supervisor error log는 비어 있었다.
