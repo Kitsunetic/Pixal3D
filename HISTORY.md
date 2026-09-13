@@ -2424,3 +2424,28 @@ durable checkpoint에 정상 저장돼 실행 중인 것을 확인했다. 같은
 `invalid checkpoint`, batch release, traceback이 없었다. 따라서 합성 round-trip뿐 아니라 실제
 canonical post-budget repair에서도 attempt 4 persistence 결함이 제거됐으며, queue는 completed
 153, running 6, pending 597, failed/stale 0으로 복구됐다.
+
+14:03 UTC GPU3 batch006/chunk002는 최종 output validation까지 완료했다. 64개 입력 중 62개가
+`completed`, Blender 900초 timeout 1개가 `failure`, 별도 입력 1개가 `schema_failure`였으며,
+worker는 같은 lease에서 chunk003으로 진행했다. 이어 batch006/chunk001의
+`prepare_bundle` attempt 3회가 소진됐지만 quality outcome이 전혀 없는 현상을 조사했다.
+GPU5, GPU4, GPU3의 세 worker-local scratch에는 각각 handoff 직전까지 mesh/PBR/render 파일이
+계속 생성된 흔적이 있었고, chunk001 관련 Blender timeout이나 Python exception은 없었다.
+
+세 차례 runtime image 교체 시 생성된 operator-handoff 기록은 모두 `refunded_attempts=[]`였다.
+원인은 handoff CLI가 scheduler의 canonical checkpoint인
+`<data2>/control/checkpoints/<source>/<shard>/chunks/<batch>/<chunk>/pipeline.json`이 아니라 존재하지
+않는 `<local>/preprocess/active/<shard>/<batch>/chunk_checkpoints`를 조회한 것이었다. 따라서 정상
+작업 중 image 교체로 중단된 prepare가 실패가 아닌데도 매번 attempt를 소비했고, 세 번째 이후
+command budget이 고갈됐다.
+
+handoff CLI가 lease의 source/shard/batch와 worker registry의 `data2_root`로 canonical checkpoint
+root를 구성하고, refund helper가 shard identity를 확인한 뒤 그 경로만 no-follow 방식으로
+읽고 쓰도록 수정했다. remediation evidence는 실제 `checkpoint_root`를 기록하는 schema version
+2로 갱신했다. production topology를 사용하는 failing-first CLI 테스트는 수정 전 attempt가
+`2`로 남아 실패했고, 수정 후 `2 -> 1` 환급을 확인했다. 관련 targeted 테스트 3개와 전체
+suite `932 passed, 1 warning in 119.72s`를 통과했으며 warning은 기존 `torch.cross` deprecation
+한 건이다. 별도 `/dev/shm` fixture에서 실제 `python -m data_toolkit.pipeline.cli queue --action
+handoff` 명령을 실행한 manual smoke도 running 0/pending 1, active attempt 제거, remediation
+evidence 생성까지 확인했다. production GPU3 node는 현재 batch006 lease가 끝날 때까지
+`draining`으로 두어 새 unit claim과 checkpoint 복구가 경쟁하지 않도록 했다.
