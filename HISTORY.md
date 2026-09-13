@@ -2503,3 +2503,15 @@ native Blender 4.5.1과 claim 없는 worker smoke를 재확인한 뒤 node를 �
 failed/stale 0이었다. 10분 자원 표본의 container CPU 합계는 약 11.8 cores(설정 상한 35), RSS
 합계는 약 28.7 GiB였고 worker 최대 VRAM은 GPU3 약 7.6 GiB였다. GPU0은 외부 작업에 계속
 양보한 채 draining/stopped 상태로 유지했다.
+
+16:30--16:38 UTC GPU0의 외부 compute process가 사라진 상태를 monitor와 30초 간격 독립
+검사로 확인했다. pending queue 선두인 batch006의 기존 partial은 GPU3 local scratch에 있었고
+GPU3는 현재 batch003만 처리해 해당 디렉터리를 쓰지 않았다. canonical output은 변경하지 않고
+GPU3의 batch006 scratch를 read-only source로 GPU0의 존재하지 않던 target에 복제했다. 복제는
+7.4 GiB/3,916 files, 111초가 걸렸고 기존 target overwrite는 없었다. 첫 GPU smoke shell은
+검증문의 quoting 오류로 `SyntaxError`를 냈지만 node가 draining인 상태여서 worker/lease는
+시작되지 않았다. quoting만 수정해 native `bpy 4.5.1 LTS`, 단일 RTX 4090과 claim 없는
+`worker --once`를 통과시킨 후 node를 활성화했다. node7-gpu0이 batch006 attempt 2를 정확히
+claim했으며 queue는 completed 153, running 6, pending 597, failed/stale 0으로 복구됐다.
+6-GPU cgroup ownership monitor도 다시 시작했고 직후 container CPU quota 합계 42 cores,
+실측 약 13.8 cores, RSS 약 31.2 GiB였으며 worker 최대 VRAM은 GPU2 약 23.2 GiB였다.
