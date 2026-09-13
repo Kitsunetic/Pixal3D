@@ -1303,9 +1303,9 @@ def test_queue_cli_handoff_preserves_attempt_without_building_runtime(
         token="held-token",
     )
     checkpoint = (
-        config.paths.local_root
-        / "preprocess/active/HSSD-00000/batch003"
-        / "chunk_checkpoints/chunk001/pipeline.json"
+        config.paths.data2_root
+        / "control/checkpoints/HSSD/HSSD-00000"
+        / "chunks/batch003/chunk001/pipeline.json"
     )
     checkpoint.parent.mkdir(parents=True)
     checkpoint.write_text(json.dumps({

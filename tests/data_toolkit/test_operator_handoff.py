@@ -26,10 +26,12 @@ def _checkpoint(*, active=True):
 
 
 def test_operator_handoff_refunds_only_the_active_command_attempt(tmp_path):
-    batch_root = tmp_path / "preprocess/active/HSSD-00000/batch009"
+    checkpoint_root = (
+        tmp_path
+        / "control/checkpoints/HSSD/HSSD-00000/chunks/batch009"
+    )
     checkpoint = (
-        batch_root
-        / "chunk_checkpoints/chunk001/pipeline.json"
+        checkpoint_root / "chunk001/pipeline.json"
     )
     checkpoint.parent.mkdir(parents=True)
     original = json.dumps(_checkpoint(), sort_keys=True).encode()
@@ -37,7 +39,8 @@ def test_operator_handoff_refunds_only_the_active_command_attempt(tmp_path):
     evidence_root = tmp_path / "control/remediations/handoff-token"
 
     result = preserve_operator_handoff_attempts(
-        batch_root,
+        checkpoint_root,
+        shard_id="HSSD-00000",
         evidence_root=evidence_root,
         unit_id="HSSD--HSSD-00000--batch009",
         node_id="node16",
@@ -57,6 +60,8 @@ def test_operator_handoff_refunds_only_the_active_command_attempt(tmp_path):
     evidence = json.loads(
         (evidence_root / "remediation.json").read_text()
     )
+    assert evidence["schema_version"] == 2
+    assert evidence["checkpoint_root"] == str(checkpoint_root)
     assert evidence["unit_id"] == "HSSD--HSSD-00000--batch009"
     assert evidence["refunded_attempts"] == [
         {
@@ -69,17 +74,20 @@ def test_operator_handoff_refunds_only_the_active_command_attempt(tmp_path):
 
 
 def test_operator_handoff_records_noop_when_no_command_is_active(tmp_path):
-    batch_root = tmp_path / "preprocess/active/HSSD-00000/batch009"
+    checkpoint_root = (
+        tmp_path
+        / "control/checkpoints/HSSD/HSSD-00000/chunks/batch009"
+    )
     checkpoint = (
-        batch_root
-        / "chunk_checkpoints/chunk001/pipeline.json"
+        checkpoint_root / "chunk001/pipeline.json"
     )
     checkpoint.parent.mkdir(parents=True)
     checkpoint.write_text(json.dumps(_checkpoint(active=False)))
     evidence_root = tmp_path / "control/remediations/handoff-token"
 
     result = preserve_operator_handoff_attempts(
-        batch_root,
+        checkpoint_root,
+        shard_id="HSSD-00000",
         evidence_root=evidence_root,
         unit_id="HSSD--HSSD-00000--batch009",
         node_id="node16",
@@ -93,4 +101,6 @@ def test_operator_handoff_records_noop_when_no_command_is_active(tmp_path):
     evidence = json.loads(
         (evidence_root / "remediation.json").read_text()
     )
+    assert evidence["schema_version"] == 2
+    assert evidence["checkpoint_root"] == str(checkpoint_root)
     assert evidence["refunded_attempts"] == []

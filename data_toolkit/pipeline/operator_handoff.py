@@ -14,7 +14,7 @@ from .orchestrator import (
 )
 
 
-HANDOFF_REMEDIATION_SCHEMA_VERSION = 1
+HANDOFF_REMEDIATION_SCHEMA_VERSION = 2
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 _CHUNK = re.compile(r"chunk[0-9]{3}")
 
@@ -42,8 +42,9 @@ def _checkpoint_payload(checkpoint) -> bytes:
 
 
 def preserve_operator_handoff_attempts(
-    batch_root: Path,
+    checkpoint_root: Path,
     *,
+    shard_id: str,
     evidence_root: Path,
     unit_id: str,
     node_id: str,
@@ -54,6 +55,7 @@ def preserve_operator_handoff_attempts(
     """Refund commands interrupted by a token-fenced operator handoff."""
 
     for value, description in (
+        (shard_id, "shard id"),
         (unit_id, "work unit id"),
         (node_id, "node id"),
         (lease_token, "lease token"),
@@ -62,13 +64,12 @@ def preserve_operator_handoff_attempts(
     if not isinstance(reason, str) or not reason.strip():
         raise ValueError("operator handoff reason must be non-empty")
     remediated_at = _timestamp(now)
-    batch_root = Path(batch_root)
+    checkpoint_root = Path(checkpoint_root)
     evidence_root = Path(evidence_root)
-    checkpoints_root = batch_root / "chunk_checkpoints"
 
     candidates = []
-    if checkpoints_root.is_dir():
-        for chunk_root in sorted(checkpoints_root.iterdir()):
+    if checkpoint_root.is_dir():
+        for chunk_root in sorted(checkpoint_root.iterdir()):
             if (
                 _CHUNK.fullmatch(chunk_root.name) is None
                 or not chunk_root.is_dir()
@@ -86,9 +87,7 @@ def preserve_operator_handoff_attempts(
                     f"invalid operator handoff checkpoint: {path}: {error}"
                 ) from error
             checkpoint = _required_checkpoint_dict(value, path)
-            expected_shard = (
-                f"{batch_root.parent.name}-{chunk_root.name}"
-            )
+            expected_shard = f"{shard_id}-{chunk_root.name}"
             if (
                 checkpoint.shard_id != expected_shard
                 or checkpoint.gate != "production"
@@ -151,7 +150,7 @@ def preserve_operator_handoff_attempts(
         "lease_token": lease_token,
         "reason": reason,
         "remediated_at": remediated_at,
-        "batch_root": str(batch_root),
+        "checkpoint_root": str(checkpoint_root),
         "refunded_attempts": refunded,
         "checkpoint_sha256": {
             item[0]: {

@@ -461,10 +461,12 @@ def _dispatch(args, config) -> int:
                 )
             current = datetime.now(timezone.utc)
             registration = status.registration
-            batch_root = (
-                registration.local_root
-                / "preprocess/active"
+            checkpoint_root = (
+                registration.data2_root
+                / "control/checkpoints"
+                / lease.unit.source
                 / lease.unit.shard_id
+                / "chunks"
                 / lease.unit.batch_id
             )
             evidence_root = (
@@ -478,7 +480,8 @@ def _dispatch(args, config) -> int:
             ):
                 queue.assert_owned(lease)
                 preserve_operator_handoff_attempts(
-                    batch_root,
+                    checkpoint_root,
+                    shard_id=lease.unit.shard_id,
                     evidence_root=evidence_root,
                     unit_id=lease.unit.unit_id,
                     node_id=args.node_id,
