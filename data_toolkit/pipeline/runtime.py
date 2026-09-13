@@ -807,6 +807,7 @@ def derive_hardware_report(
     evidence_sha256: str,
     *,
     now=None,
+    enforce_configured_gpu_count: bool = True,
 ) -> dict:
     if not isinstance(value, Mapping) or set(value) != {
         "schema_version",
@@ -841,10 +842,12 @@ def derive_hardware_report(
         raise ArtifactValidationError("invalid hardware OptiX flag")
 
     gpu_values = value["gpus"]
-    expected_gpu_count = config.parallelism.gpu_count
+    if not isinstance(gpu_values, list) or not gpu_values:
+        raise ArtifactValidationError("invalid hardware GPU evidence")
+    expected_gpu_count = len(gpu_values)
     if (
-        not isinstance(gpu_values, list)
-        or len(gpu_values) != expected_gpu_count
+        enforce_configured_gpu_count
+        and expected_gpu_count != config.parallelism.gpu_count
     ):
         raise ArtifactValidationError(
             "hardware GPU count does not match the configuration"
@@ -1014,6 +1017,7 @@ def read_hardware_report(config: PipelineConfig, *, require_passed=True) -> dict
         evidence,
         config,
         sha256(evidence_payload).hexdigest(),
+        enforce_configured_gpu_count=False,
     )
     if report != derived:
         raise ArtifactValidationError("hardware report does not match held evidence")

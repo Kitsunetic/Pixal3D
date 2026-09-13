@@ -33,6 +33,8 @@ from data_toolkit.pipeline.runtime import (
     refresh_gate_evidence,
     validate_family_memberships,
 )
+from data_toolkit.pipeline.worker_registry import WorkerRegistration
+from data_toolkit.pipeline.worker_runtime import execution_config
 from test_reporting import CONFIG_HASH, valid_report_payload
 
 
@@ -2083,6 +2085,33 @@ def test_pilot_reader_validates_schema_and_source(tmp_config):
     assert reader.p95_peak_local_bytes("ABO") == 243
     with pytest.raises(ArtifactValidationError, match="source"):
         reader.p95_peak_local_bytes("Unknown")
+
+
+def test_worker_pilot_reader_accepts_shared_hardware_report_gpu_count(
+    tmp_config,
+):
+    config = load_config(tmp_config)
+    root = config.paths.data2_root / "control/report_inputs"
+    root.mkdir(parents=True)
+    (root / "hardware.json").write_text(
+        json.dumps(valid_hardware_payload(config))
+    )
+    RuntimeReportBuilder(config)(None, True)
+    worker_config = execution_config(
+        config,
+        WorkerRegistration(
+            node_id="node7-gpu5",
+            ssh_target="n7",
+            cpu_limit=7,
+            gpu_indices=(0,),
+            data2_root=config.paths.data2_root,
+            data3_root=config.paths.data3_root,
+            local_root=config.paths.local_root / "gpu5",
+        ),
+    )
+
+    assert worker_config.parallelism.gpu_count == 1
+    assert PilotArtifactReader(worker_config).p95_peak_local_bytes("ABO") == 243
 
 
 def test_pilot_reader_prefers_recomputed_pilot_measurement(
