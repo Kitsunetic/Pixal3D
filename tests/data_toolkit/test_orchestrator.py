@@ -416,6 +416,79 @@ def test_corrupt_complete_output_is_regenerated(isolated_config, shard_context):
     assert "prepare_bundle" in fake_runner.executed
 
 
+def test_completed_output_revalidation_cannot_persist_quality_outcomes(
+    isolated_config, shard_context
+):
+    asset_sha = "a" * 64
+    write_instances(shard_context, (asset_sha,))
+    command = CommandSpec("prepare_bundle", ("worker",))
+    runner = RecordingRunner(isolated_config, commands=(command,))
+    runner.checkpoint.complete(command.name)
+    runner._restore_quality_state = lambda _context, _checkpoint: None
+    runner._advance_quality_ledger = lambda *_args, **_kwargs: 1
+
+    def mutating_validator():
+        runner.record_quality_outcome(asset_sha, "completed")
+        return True
+
+    runner.validators[command.name] = mutating_validator
+
+    runner.run_shard(shard_context)
+
+    assert runner.executed == [command.name]
+    assert runner.checkpoint.quality_outcomes == {}
+
+
+def test_completed_output_regeneration_includes_prior_successes(
+    isolated_config, shard_context
+):
+    completed = "a" * 64
+    quarantined = "b" * 64
+    write_instances(shard_context, (completed, quarantined))
+    command = CommandSpec(
+        "prepare_bundle",
+        ("worker", "--instances", str(shard_context.instances)),
+    )
+    runner = RecordingRunner(isolated_config, commands=(command,))
+    runner.checkpoint.complete(command.name)
+    runner.checkpoint.quality_outcomes = {
+        completed: "completed",
+        quarantined: "failure",
+    }
+    runner._restore_quality_state = lambda _context, _checkpoint: None
+    services = PipelineServices(isolated_config, runner=runner)
+    marker = shard_context.output_root / "render-complete"
+    observed = []
+
+    def validator():
+        candidates = services._eligible_assets(shard_context)
+        observed.append(candidates)
+        if any(not marker.is_file() for _asset in candidates):
+            raise OutputValidationError("missing completed render")
+        return True
+
+    def execute(launch, _shard_id):
+        runner.executed.append(launch.name)
+        instances = Path(
+            launch.argv[launch.argv.index("--instances") + 1]
+        ).read_text().splitlines()
+        assert instances == [completed]
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("complete")
+
+    runner.validators[command.name] = validator
+    runner.execute = execute
+
+    runner.run_shard(shard_context)
+
+    assert runner.executed == [command.name]
+    assert observed == [(completed,), (completed,)]
+    assert runner.checkpoint.quality_outcomes == {
+        completed: "completed",
+        quarantined: "failure",
+    }
+
+
 def test_completed_output_revalidation_preserves_pipeline_stop(
     isolated_config, shard_context
 ):

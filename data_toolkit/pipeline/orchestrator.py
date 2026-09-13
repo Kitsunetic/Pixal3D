@@ -1059,6 +1059,7 @@ class PipelineRunner:
         self._active_quality_ledger_path: Path | None = None
         self._active_quality_assets: tuple[str, ...] | None = None
         self._active_instances_sha256: str | None = None
+        self._output_validation_read_only = False
         self.worker_profile: WorkerProfile | None = None
         self.last_command_timings: dict[str, float] = {}
 
@@ -1090,11 +1091,18 @@ class PipelineRunner:
             )
         return validator
 
-    def _valid_output(self, command_name: str) -> bool:
+    def _valid_output(
+        self, command_name: str, *, read_only: bool = False
+    ) -> bool:
+        previous = self._output_validation_read_only
+        self._output_validation_read_only = previous or read_only
         try:
-            return self._validator(command_name)() is True
-        except ValidationError:
-            return False
+            try:
+                return self._validator(command_name)() is True
+            except ValidationError:
+                return False
+        finally:
+            self._output_validation_read_only = previous
 
     def _load_frozen_quality_assets(
         self, context: ShardContext
@@ -1296,7 +1304,7 @@ class PipelineRunner:
             for command in self._build_commands(context):
                 if command.name in checkpoint.completed_commands:
                     try:
-                        if self._valid_output(command.name):
+                        if self._valid_output(command.name, read_only=True):
                             continue
                     except PipelineStopped:
                         raise
@@ -1329,7 +1337,9 @@ class PipelineRunner:
                     prior_attempts = checkpoint.attempts.get(command.name, 0)
                     if prior_attempts >= MAX_COMMAND_ATTEMPTS:
                         try:
-                            if self._valid_output(command.name):
+                            if self._valid_output(
+                                command.name, read_only=True
+                            ):
                                 checkpoint.complete(command.name)
                                 try:
                                     self.save_checkpoint(
@@ -1591,7 +1601,7 @@ class PipelineRunner:
             for name in requested:
                 if name not in checkpoint.completed_commands:
                     return False
-                if not self._valid_output(name):
+                if not self._valid_output(name, read_only=True):
                     return False
             return True
         finally:
@@ -1650,6 +1660,10 @@ class PipelineRunner:
         reason: str,
         attempts: int = 0,
     ) -> None:
+        if self._output_validation_read_only:
+            raise OutputValidationError(
+                "completed output requires regeneration"
+            )
         context = self.active_context
         ledger = self._active_quality_ledger
         ledger_path = self._active_quality_ledger_path
@@ -1718,6 +1732,10 @@ class PipelineRunner:
         reason: str = "asset output failed validation",
         attempts: int = 0,
     ) -> None:
+        if self._output_validation_read_only:
+            raise OutputValidationError(
+                "completed output requires regeneration"
+            )
         checkpoint = self.active_checkpoint
         checkpoint_path = self.active_checkpoint_path
         context = self.active_context
@@ -1802,10 +1820,20 @@ class PipelineRunner:
             _validated_asset_sha(item)
             for item in payload.decode("ascii").splitlines()
         )
+        include_completed = self._include_completed_quality_outcomes(
+            checkpoint
+        )
+
+        def has_eligible_outcome(asset: str) -> bool:
+            outcome = checkpoint.quality_outcomes.get(asset)
+            return outcome is None or (
+                include_completed and outcome == "completed"
+            )
+
         eligible = tuple(
             asset
             for asset in assets
-            if asset not in checkpoint.quality_outcomes
+            if has_eligible_outcome(asset)
             and (
                 not families
                 or any(
@@ -1836,7 +1864,7 @@ class PipelineRunner:
                 family_assets = tuple(
                     asset
                     for asset in assets
-                    if asset not in checkpoint.quality_outcomes
+                    if has_eligible_outcome(asset)
                     and self.family_is_eligible(asset, family)
                 )
                 _atomic_write_bytes_nofollow(
@@ -1862,6 +1890,17 @@ class PipelineRunner:
         if family_manifest_path is not None:
             argv.extend(("--family_instances_file", str(family_manifest_path)))
         return replace(command, argv=tuple(argv))
+
+    def _include_completed_quality_outcomes(
+        self, checkpoint: PipelineCheckpoint | None = None
+    ) -> bool:
+        checkpoint = checkpoint or self.active_checkpoint
+        if self._output_validation_read_only:
+            return True
+        if checkpoint is None or checkpoint.active_attempt is None:
+            return False
+        command = checkpoint.active_attempt.get("command")
+        return command in checkpoint.completed_commands
 
     def execute(self, command: CommandSpec, shard_id: str) -> None:
         if not command.argv:
@@ -5007,10 +5046,19 @@ class PipelineServices:
         checkpoint = getattr(self.runner, "active_checkpoint", None)
         if checkpoint is None:
             return assets
+        include_completed = self.runner._include_completed_quality_outcomes(
+            checkpoint
+        )
         return tuple(
             asset
             for asset in assets
-            if asset not in checkpoint.quality_outcomes
+            if (
+                checkpoint.quality_outcomes.get(asset) is None
+                or (
+                    include_completed
+                    and checkpoint.quality_outcomes.get(asset) == "completed"
+                )
+            )
         )
 
     def _candidate_assets(

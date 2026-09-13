@@ -2225,3 +2225,35 @@ commands, pipeline integration, orchestrator 관련 272개 테스트와 전체 9
 fixture로 확인했으며, executable worktree-local `TMPDIR`에서는 모두 통과했다. 기존 in-flight
 chunk는 새 asset-stats part를 재생성하되 이미 검증 가능한 render/mesh/PBR 결과는 재사용할 수
 있어 canonical 산출물을 삭제하거나 덮어쓸 필요가 없다.
+
+수정 commit `7869c38a4fd2b25c88443a0380872014e7e90d71`과 data_toolkit tree
+`a0f854d7808b8b99b1d114d6f551209fd688ca31`로 n7 image `pixal3d-fast:7869c38`
+(`sha256:1f66d062420264356c80f70bd9f434189d447c1647ef5bc33b432577ff7ee73a`)을
+build했다. 격리된 두 개의 실제 `asset_stats` process가 같은 `chunk000`을 병렬 실행해도
+`batch003`과 `batch004`의 part 파일과 SHA 집합이 분리되는 것을 확인했다. GPU 0--5별 새
+container는 각각 RTX 4090 한 장만 보며 7-core quota, 32 GiB shared memory, `bpy 4.5.1`,
+raw/tools read-only mount, restart policy `no` 및 claim 없는 worker preflight를 통과했다. 이전
+image container는 삭제하지 않고 stopped backup으로 보존했다.
+
+기존 여섯 lease는 registry drain 후 공식 handoff했고, batch005의 실패/history는
+`control/runtime/work_queue/remediated/n7-parallel-record-prefix-race-20260913T0830Z`에
+보존한 뒤 공식 retry했다. queue가 completed 152, pending 604, running/failed/stale 0인 것을
+확인한 후에만 새 image supervisor를 활성화했다. 새 실행 argv의 record prefix가 실제로
+`ObjaverseXL_sketchfab-00001_batch004_chunk000_`처럼 batch까지 포함하는 것도 확인했다.
+batch002는 완료되어 08:54 UTC 상태가 completed 153, running 6, pending 596, failed 1,
+stale 0이 됐다.
+
+batch005는 수정 image에서도 세 번 재시도한 뒤 chunk001/002 finalize의 기존 attempt budget
+소진으로 다시 failed가 됐다. 정확한 checkpoint를 붙여 validator를 직접 실행한 결과 각 chunk의
+기존 성공 asset 하나에서 `renders_cond/<sha>/transforms.json`이 실제 누락돼 있었다. 그러나
+완료 command의 사전 검증이 durable quality checkpoint/ledger를 수정할 수 있었고, 모든 terminal
+quality outcome을 후보에서 제외해 기존 `completed` asset의 누락 파일을 검사하거나 재생성하지
+못하는 별도 결함이 확인됐다.
+
+완료 출력 사전 검증을 read-only context로 만들고 이때 quality outcome을 기록하려 하면
+재생성을 요구하도록 변경했다. 또한 완료 command를 재검증하거나 재실행하는 동안에는 이전
+`completed` asset만 candidate/instances에 다시 포함하고, `failure`와 `schema_failure` asset은
+계속 제외한다. 수정 전 두 회귀 테스트는 각각 command를 잘못 skip해 실패했고, 수정 후 기존
+terminal outcome을 바꾸지 않은 채 성공 asset만 재생성 대상으로 전달함을 확인했다. 관련
+orchestrator/scheduler/commands/integration 302개와 전체 927개 테스트가 통과했으며 기존
+`torch.cross` warning 1개 외에는 경고나 실패가 없었다.
