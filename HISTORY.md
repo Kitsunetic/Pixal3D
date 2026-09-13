@@ -2196,3 +2196,15 @@ chunk checkpoint의 `render.elapsed_seconds`는 3,196.48초로 49.95초/asset이
 producer/consumer 방식으로 겹쳐 실행됐다. 초기 4분 관측에서 geometry `.vxz`는 106개에서
 269개, latent는 0개에서 48개로 증가했다. container RSS는 9.45--12.51 GiB, encoder model 로드 후
 VRAM은 약 5.02 GiB였고 OOM/error는 없었다.
+
+07:54--07:58 UTC에 GPU0의 타 사용자 compute process가 종료되고 VRAM 사용량이 0 MiB인 상태를
+30초 간격으로 연속 확인했다. 기존 우리 `youngwoo_diyscene_fast_node7-gpu0` container의 image
+ID, GPU0 단독 노출, 7-core quota, 32 GiB shared memory, restart policy `no`, canonical raw와
+Blender tools의 nested read-only mount를 다시 확인했다. registry를 `draining`으로 유지한 채
+container를 시작하고 claim 없는 `worker --once` 환경 검증이 exit 0인 경우에만 node를
+활성화했다. supervisor는 동일한 immutable image에서 별도 log
+`control/logs/supervisor-6acb806-gpu0-resume-20260913T0756Z.log`로 시작했다. GPU0 worker는 공식
+queue에서 기존 batch002 attempt 1을 다시 claim했고, 완료된 chunk000--002를 재실행하지 않고
+보존된 batch002/chunk003의 `prepare_bundle`로 재개했다. queue는 completed 152, running 6,
+pending 598, failed/stale 0이며 여섯 container의 CPU quota 합계는 42 cores로 44-core 제한
+이내다.
