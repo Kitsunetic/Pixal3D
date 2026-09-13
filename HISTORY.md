@@ -2326,3 +2326,26 @@ completed 153, running 5, pending 598, failed/stale 0, active CPU quota 합계 3
 stopped container의 exact image와 claim 없는 preflight를 다시 확인하고 node를 활성화했다.
 batch008을 동일 GPU5 local scratch로 다시 claim한 후 queue는 running 6, pending 597로 복구됐고,
 추가 타 사용자 GPU5 process는 관측되지 않았다.
+
+### 2026-09-13 n7 canonical production 실측
+
+10:14 UTC에 GPU4의 `ObjaverseXL_sketchfab-00001/batch007/chunk001`이 새 runtime에서
+prepare, render, encode, finalize 전 단계를 완료하고 chunk002로 진행했다. checkpoint의 64개
+quality outcome은 모두 `completed`였고 failure/schema_failure는 없었다. stage elapsed는
+prepare 28.39초, render 1,720.67초, encode 1,793.67초, finalize 18.83초로 합계
+3,561.57초, 즉 55.65초/asset이었다. 기존 최종 100-asset 벤치마크 53.55초/asset과 3.9%
+차이로 production에서도 동일한 처리량 수준이 재현됐다.
+
+해당 checkpoint에는 이전 실행에서 누적된 `prepare_bundle` 3회와
+`geometry_encode_bundle` 2회의 attempt 이력이 남아 있지만, 이번 resume의 최종 output
+validation은 통과했다. 같은 시각 queue는 completed 153, running 6, pending 597,
+failed/stale 0이고 모든 lease heartbeat가 정상이었다. 여섯 container의 순간 CPU 사용 합계는
+약 28 cores로 42-core quota 이내였고 RSS는 container당 약 4--10 GiB였다.
+
+GPU0 batch003/chunk001에서는 한 ObjaverseXL asset
+`08e87a669e4ffac0d0607a21d94086e300152b55848f2878bd0e0adf3f71a555`의 external Blender
+`dump_mesh`가 900초 제한으로 timeout되어 mesh pickle이 생성되지 않았다. supervisor와
+chunk command는 계속 살아 있고 다음 asset의 PNG가 증가하므로 worker 장애나 memory leak이
+아닌 개별 입력 품질 문제로 분류했다. prepare 종료 후 validator가 이 asset만 terminal quality
+failure로 격리하는지 감시 중이며, 확인 전에는 worker를 재시작하거나 canonical output을
+수정하지 않는다.
