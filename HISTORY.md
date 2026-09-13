@@ -2115,3 +2115,34 @@ running 5(batch002--006), pending 599, failed/stale 0이며 각 container CPU qu
 총 상한은 35 physical cores다. GPU 4의 타 사용자 process는 건드리지 않았다. 모든 production
 container는 host 재시작 뒤 GPU 점유를 재확인하지 않고 자동 실행되지 않도록 restart policy를
 `no`로 유지한다.
+
+기존 production checkpoint 중 548개가 최적화 이전 stage 이름과 node-local 경로를 담고 있어,
+새 worker가 이미 완료된 chunk를 검증하는 과정에서 legacy stage를 현재 4-stage 계약과 비교하지
+못하거나 사라진 이전 node의 raw metadata를 요구하는 문제가 드러났다. former 9-stage 이름을
+현재 stage로 정규화하고 dependency 순서대로 완료 상태를 검증하며 parent metadata를 fallback으로
+사용하도록 수정했다(`32bbbf2`). parent와 child local metadata가 모두 없을 때에는 checksum이
+검증된 canonical raw를 worker-local source로 다시 stage하도록 보강했다(`6acb806`). 각 수정 후
+전체 suite는 924 passed, 기존 `torch.cross` warning 1개였고, 관련 targeted suite는 219 passed였다.
+최신 image `pixal3d-fast:6acb806`은 runtime commit
+`6acb8060e2388498ba0768ddc33379f70f50cf4a`, data_toolkit tree
+`e89b402a34f7a255f2c42a68df8fb0a491c786e7`로 고정했다.
+
+legacy checkpoint 전체 26 MiB는 변경 전에
+`control/recovery/n7-legacy-checkpoint-schema-20260913T0550Z/checkpoints-before-resume.tar.gz`
+및 SHA-256 sidecar로 보존하고 검증했다. 현재 shard에서 네 chunk가 promoted됐지만 durable
+publication은 없고 parent quality failure가 10%를 넘은 batch006/007/008/012/013/015는 재사용할
+수 없는 cross-node partial state로 판정했다. 같은 shard lease가 모두 없는 상태에서 parent/chunk
+checkpoint, 이전 quality ledger와 queue history를
+`control/recovery/n7-invalid-promoted-resume-20260913T0615Z`로 이동해 보존하고, completed unit만
+남도록 quality ledger를 재구성한 뒤 terminal batch006/007을 공식 retry했다. GPU3의 batch006/008
+local scratch도 `/file3/youngwoo/pixal3d-n7-runtime/local/gpu3/control/remediations/`
+아래 같은 incident 이름으로 이동했다. 복구 전 dry-run과 합성 회귀 테스트를 통과했고, 적용 후
+queue는 completed 152, pending 604, running/failed/stale 0이었다.
+
+06:35 UTC에 GPU 0/1/2/3/5별 container를 모두 최신 image로 교체했다. 각 container는 RTX 4090
+한 장만 보며 `bpy 4.5.1 LTS`, 7-core quota, 32 GiB shared memory, raw/tools read-only mount 및
+restart policy `no`를 확인했고, claim 없는 `validate_worker_environment()`를 모두 통과했다.
+이전 worker의 batch002--005 lease는 정식 handoff한 뒤 같은 unit을 다시 claim했으며 batch002는
+완료된 chunk를 건너뛰고 chunk003부터 재개했다. reset된 batch006은 새 chunk000--003 checkpoint를
+만들어 canonical raw에서 다시 시작했다. 재개 직후 queue는 completed 152, running 5, pending 599,
+failed/stale 0이고 초기 오류는 없었다. GPU4는 production에 사용하지 않았다.
