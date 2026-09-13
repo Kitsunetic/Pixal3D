@@ -2356,6 +2356,16 @@ chunk command는 계속 살아 있고 다음 asset의 PNG가 증가하므로 wor
 63개를 유지하면서 지원하지 않는 shader의 PBR family만 정확히 분리했고, timeout 하나가 전체
 chunk나 queue failure를 일으키지 않는 것을 production ledger로 확인했다.
 
+11:09 UTC batch003/chunk001의 geometry, 세 해상도 voxel cleanup과 output validation까지
+완료됐다. 최종 quality outcome은 63개 `completed`, timeout asset 1개 `failure`였고 worker는
+같은 lease에서 batch003/chunk002 prepare를 자동 시작했다. checkpoint stage elapsed는 prepare
+42.10초, render 3,154.35초, encode 1,927.22초, finalize 21.30초로 합계 5,144.97초,
+64개 입력 기준 80.39초/asset이었다. 이 합계에서 단일 불량 mesh의 강제 timeout 900초를
+제외한 정상 처리 경로는 4,244.97초, 66.33초/asset이다. geometry 중간 관측에서 voxel은
+shape 63개와 PBR 53개의 3해상도×2-view 합계 696개를 모두 생성했고, shape/SS/PBR latent도
+family별 검증을 거쳐 output validation을 통과했다. geometry 구간 container RSS는 약
+11.8 GiB까지 올라갔다가 6 GiB대로 회수돼 누적 memory leak 징후가 없었다.
+
 10:23 UTC에 GPU2의 batch005/chunk001 post-budget repair가 production에서 완료됐다.
 `pipeline.json`은 `stage_raw`, `prepare_bundle`, `geometry_encode_bundle`, 세 해상도 voxel cleanup,
 `validate_outputs`를 모두 completed command로 기록했고, quality outcome은 복구 대상 성공 asset
