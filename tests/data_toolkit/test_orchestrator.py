@@ -489,6 +489,79 @@ def test_completed_output_regeneration_includes_prior_successes(
     }
 
 
+def test_completed_output_regeneration_gets_attempt_after_exhausted_budget(
+    isolated_config, shard_context
+):
+    asset_sha = "a" * 64
+    write_instances(shard_context, (asset_sha,))
+    command = CommandSpec(
+        "prepare_bundle",
+        ("worker", "--instances", str(shard_context.instances)),
+    )
+    runner = RecordingRunner(isolated_config, commands=(command,))
+    runner.checkpoint.complete(command.name)
+    runner.checkpoint.attempts[command.name] = (
+        orchestrator_module.MAX_COMMAND_ATTEMPTS
+    )
+    runner.checkpoint.quality_outcomes = {asset_sha: "completed"}
+    runner._restore_quality_state = lambda _context, _checkpoint: None
+    marker = shard_context.output_root / "render-complete"
+
+    def validator():
+        if not marker.is_file():
+            raise OutputValidationError("missing completed render")
+        return True
+
+    def execute(launch, _shard_id):
+        runner.executed.append(launch.name)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("complete")
+
+    runner.validators[command.name] = validator
+    runner.execute = execute
+
+    runner.run_shard(shard_context)
+
+    assert runner.executed == [command.name]
+    assert runner.checkpoint.attempts[command.name] == (
+        orchestrator_module.MAX_COMMAND_ATTEMPTS + 1
+    )
+    assert runner.checkpoint.quality_outcomes == {asset_sha: "completed"}
+
+
+def test_completed_output_repair_stops_after_one_post_budget_failure(
+    isolated_config, shard_context
+):
+    asset_sha = "a" * 64
+    write_instances(shard_context, (asset_sha,))
+    command = CommandSpec(
+        "prepare_bundle",
+        ("worker", "--instances", str(shard_context.instances)),
+    )
+    runner = RecordingRunner(isolated_config, commands=(command,))
+    runner.checkpoint.complete(command.name)
+    runner.checkpoint.attempts[command.name] = (
+        orchestrator_module.MAX_COMMAND_ATTEMPTS
+    )
+    runner.checkpoint.quality_outcomes = {asset_sha: "completed"}
+    runner._restore_quality_state = lambda _context, _checkpoint: None
+    runner.validators[command.name] = lambda: False
+
+    def execute(launch, _shard_id):
+        runner.executed.append(launch.name)
+        raise RuntimeError("repair failed")
+
+    runner.execute = execute
+
+    with pytest.raises(PipelineStopped, match="repair failed"):
+        runner.run_shard(shard_context)
+
+    assert runner.executed == [command.name]
+    assert runner.checkpoint.attempts[command.name] == (
+        orchestrator_module.MAX_COMMAND_ATTEMPTS + 1
+    )
+
+
 def test_completed_output_revalidation_preserves_pipeline_stop(
     isolated_config, shard_context
 ):

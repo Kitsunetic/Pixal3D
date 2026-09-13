@@ -1302,10 +1302,12 @@ class PipelineRunner:
                     )
 
             for command in self._build_commands(context):
+                repairing_completed_output = False
                 if command.name in checkpoint.completed_commands:
                     try:
                         if self._valid_output(command.name, read_only=True):
                             continue
+                        repairing_completed_output = True
                     except PipelineStopped:
                         raise
                     except (
@@ -1335,7 +1337,10 @@ class PipelineRunner:
                         )
 
                     prior_attempts = checkpoint.attempts.get(command.name, 0)
-                    if prior_attempts >= MAX_COMMAND_ATTEMPTS:
+                    if (
+                        prior_attempts >= MAX_COMMAND_ATTEMPTS
+                        and not repairing_completed_output
+                    ):
                         try:
                             if self._valid_output(
                                 command.name, read_only=True

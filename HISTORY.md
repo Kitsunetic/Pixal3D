@@ -2282,3 +2282,19 @@ GPU2의 batch005/chunk001은 기존 failure 1개를 제외하고 이전 성공 6
 병렬 실행되는 것을 확인했다. 재개 직후 여섯 container CPU는 각각 약 6.36--7.04 cores,
 RSS는 4.64--5.68 GiB였고 GPU2 render 표본은 utilization 36%, VRAM 3.36 GiB였다. 모든 lease
 heartbeat가 유지됐고 supervisor error log는 비어 있었다.
+
+계속된 checkpoint/output 대조에서 batch005/chunk003도 64개 `completed` outcome과
+`prepare_bundle` attempt 3을 기록했지만 local render transforms는 57개만 남아 있었다. 따라서
+완료 stage의 불완전 output을 찾아도 과거 attempt budget이 이미 3이면 복구 command를 실행하기
+전에 중단되는 경로를 production 실패 전에 재현했다. 일반 미완료 command의 3회 retry 제한은
+유지하면서, 과거 완료 stage의 output이 나중에 불완전하다고 검증된 경우에만 현재 resume에서
+1회의 post-budget repair attempt를 허용했다. 이 복구 attempt가 실패하면 즉시 중단하며 반복
+retry하지 않는다.
+
+수정 전 회귀 테스트는 `command attempt budget already exhausted`로 command 실행 없이 실패했다.
+수정 후 post-budget 복구 성공과 단일 복구 실패의 fail-closed 동작을 모두 확인했고 관련 suite
+304개와 전체 929개 테스트가 통과했다. full suite 최초 실행의 Blender fixture 4개 실패는 삭제된
+worktree-local `TMPDIR` 때문에 Python이 host의 noexec `/tmp`로 fallback한 환경 문제였으며,
+실행 가능한 temp directory를 다시 만든 뒤 해당 4개와 전체 suite가 통과했다. 같은 시점의
+production queue는 completed 153, running 6, pending 597, failed/stale 0으로 유지됐고
+09:19--09:26 UTC의 render transforms는 여섯 batch 합계 254개에서 274개로 증가했다.
