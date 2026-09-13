@@ -1,2 +1,4 @@
 # Optional dependency for --renderer_mode native.
 bpy==4.5.1 --hash=sha256:f8cd41c8f8f13e4aa77a7eb0ba4d95d2b8bcc3241ae72acdff3bc6d2558b9e3c
+GPUtil==1.4.0 --hash=sha256:099e52c65e512cdfa8c8763fca67f5a5c2afb63469602d5dcb4d296b3661efb9
+objaverse==0.1.7 --hash=sha256:7396d119efde5794d0e87d3ca03047d0b0585b2a83ea381a8cc2ddc219d6f1a3
