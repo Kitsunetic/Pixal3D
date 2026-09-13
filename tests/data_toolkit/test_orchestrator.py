@@ -258,6 +258,45 @@ def test_parallel_raw_metadata_allows_quarantined_chunk_without_metadata(
     ) == ()
 
 
+def test_parallel_raw_metadata_uses_parent_copy_after_chunk_promotion(
+    isolated_config, shard_context
+):
+    completed = "a" * 64
+    parent = replace(shard_context, gate="production")
+    parent.instances.parent.mkdir(parents=True, exist_ok=True)
+    parent.instances.write_text(f"{completed}\n")
+    runner = RecordingRunner(isolated_config)
+    runner.checkpoint.quality_outcomes = {completed: "completed"}
+    services = PipelineServices(isolated_config, runner=runner)
+    parent_metadata = parent.download_root / "raw/metadata.csv"
+    parent_metadata.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {
+                "sha256": completed,
+                "local_path": f"raw/{completed}.glb",
+                "content_sha256": completed,
+                "companion_files": "{}",
+            }
+        ]
+    ).to_csv(parent_metadata, index=False)
+    child_instances = parent.work_root / "chunks/chunk000/instances.txt"
+    child_instances.parent.mkdir(parents=True, exist_ok=True)
+    child_instances.write_text(f"{completed}\n")
+    child = replace(
+        parent,
+        instances=child_instances,
+        download_root=parent.work_root / "chunks/chunk000/source",
+    )
+    chunk = SimpleNamespace(assets=lambda: (completed,))
+    executor = SimpleNamespace(service_context=lambda _chunk: (services, child))
+
+    services._write_parallel_raw_metadata(parent, (chunk,), executor)
+
+    records = services._read_raw_records(parent_metadata, (completed,))
+    assert tuple(record["sha256"] for record in records) == (completed,)
+
+
 def test_build_packs_creates_empty_output_root_for_quarantined_batch(
     isolated_config, shard_context
 ):

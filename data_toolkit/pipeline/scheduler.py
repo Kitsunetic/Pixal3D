@@ -20,6 +20,18 @@ from .parallelism import DynamicResourceBroker, NodeResourceBroker
 
 CHUNK_CHECKPOINT_SCHEMA_VERSION = 1
 CHUNK_MANIFEST_SCHEMA_VERSION = 1
+_BUNDLED_STAGE_ORDER = ("prepare", "render", "encode", "finalize")
+_LEGACY_STAGE_ORDER = (
+    "prepare",
+    "render",
+    "geometry_256",
+    "encode_256",
+    "geometry_512",
+    "encode_512",
+    "geometry_1024",
+    "encode_1024",
+    "finalize",
+)
 
 
 class Lane(str, Enum):
@@ -161,6 +173,30 @@ class ChunkExecutionError(RuntimeError):
 
 class ChunkIdentityError(ChunkExecutionError):
     pass
+
+
+def _map_legacy_completed_stages(
+    completed: object, known: tuple[str, ...]
+) -> object:
+    legacy_only = frozenset(_LEGACY_STAGE_ORDER) - frozenset(_BUNDLED_STAGE_ORDER)
+    if (
+        known != _BUNDLED_STAGE_ORDER
+        or not isinstance(completed, list)
+        or not any(stage in legacy_only for stage in completed)
+        or completed != [stage for stage in _LEGACY_STAGE_ORDER if stage in completed]
+    ):
+        return completed
+    encode_complete = all(stage in completed for stage in _LEGACY_STAGE_ORDER[2:8])
+    return [
+        stage
+        for stage, available in (
+            ("prepare", "prepare" in completed),
+            ("render", "render" in completed),
+            ("encode", encode_complete),
+            ("finalize", encode_complete and "finalize" in completed),
+        )
+        if available
+    ]
 
 
 def _is_sha(value: object) -> bool:
@@ -444,6 +480,7 @@ class ParallelChunkScheduler:
             raise ChunkIdentityError(f"invalid chunk checkpoint schema: {chunk.chunk_id}")
         completed = value["completed_stages"]
         known = tuple(stage.name for stage in self.stages)
+        completed = _map_legacy_completed_stages(completed, known)
         if (
             value["schema_version"] != CHUNK_CHECKPOINT_SCHEMA_VERSION
             or value["chunk_id"] != chunk.chunk_id
@@ -512,20 +549,11 @@ class ParallelChunkScheduler:
                     )
                 checkpoints[chunk.chunk_id] = checkpoint
                 continue
-            completed_set = set(checkpoint.completed_stages)
-            covered = {
-                dependency
-                for stage in self.stages
-                if stage.name in completed_set
-                for dependency in stage.dependencies
-            }
-            frontiers = completed_set - covered
             retained = []
             for name in checkpoint.completed_stages:
-                if name not in frontiers:
-                    retained.append(name)
-                    continue
                 stage = stage_by_name[name]
+                if any(dependency not in retained for dependency in stage.dependencies):
+                    continue
                 try:
                     valid = self.executor.validate(chunk, stage) is True
                 except BaseException as error:

@@ -323,3 +323,90 @@ def test_chunk_context_scopes_all_shared_record_parts(tmp_path, config):
     for name in ("prepare_bundle", "geometry_encode_bundle"):
         argv = commands[name].argv
         assert argv[argv.index("--record_prefix") + 1] == "chunk000_"
+
+
+@pytest.mark.parametrize(
+    ("legacy_completed", "expected_completed", "promoted"),
+    (
+        (("prepare", "render", "geometry_256"), ["prepare", "render"], False),
+        (
+            (
+                "prepare",
+                "render",
+                "geometry_256",
+                "encode_256",
+                "geometry_512",
+                "encode_512",
+                "geometry_1024",
+                "encode_1024",
+                "finalize",
+            ),
+            ["prepare", "render", "encode", "finalize"],
+            True,
+        ),
+    ),
+)
+def test_legacy_chunk_checkpoint_maps_to_bundled_stages(
+    tmp_path, legacy_completed, expected_completed, promoted
+):
+    assets = _assets(1)
+    parent = ShardContext.for_test(tmp_path / "parent", "ABO", "ABO-00000")
+    parent.instances.parent.mkdir(parents=True)
+    parent.instances.write_text(f"{assets[0]}\n")
+    stages = (
+        StageSpec("prepare", Lane.PREPARE, cpu_cores=1),
+        StageSpec("render", Lane.RENDER, dependencies=("prepare",)),
+        StageSpec("encode", Lane.ENCODE, dependencies=("render",)),
+        StageSpec("finalize", Lane.ENCODE, dependencies=("encode",)),
+    )
+    scheduler = ParallelChunkScheduler(
+        config_hash="c" * 64,
+        broker=NodeResourceBroker(cpu_limit=1, gpu_count=1),
+        executor=_TimelineExecutor(),
+        stages=stages,
+        checkpoint_root=tmp_path / "legacy-checkpoints",
+        chunk_assets=1,
+        max_chunks_in_flight=1,
+        promoter=lambda _parent, _chunk: None,
+        publisher=lambda _parent, _chunks: None,
+    )
+    chunk = scheduler.freeze_chunks(parent, assets)[0]
+    checkpoint_path = scheduler._checkpoint_path(chunk)
+    checkpoint_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "chunk_id": "chunk000",
+                "instances_sha256": sha256(chunk.instances.read_bytes()).hexdigest(),
+                "config_hash": "c" * 64,
+                "completed_stages": list(legacy_completed),
+                "worker_profiles": {},
+                "resource_peaks": {},
+                "promotion_started": promoted,
+                "promoted": promoted,
+            }
+        )
+    )
+
+    checkpoint = scheduler._load_checkpoint(chunk)
+
+    assert checkpoint.completed_stages == expected_completed
+
+
+def test_restart_drops_completed_dependents_after_invalid_dependency(tmp_path):
+    class InvalidPrepareExecutor(_TimelineExecutor):
+        def validate(self, chunk, stage):
+            super().validate(chunk, stage)
+            return stage.name != "prepare"
+
+    first = _TimelineExecutor(fail=("chunk000", "encode"))
+    parent, scheduler = _scheduler(tmp_path, first)
+    with pytest.raises(ChunkExecutionError, match="chunk000/encode"):
+        scheduler.run_batch(parent, _assets(4))
+
+    resumed = InvalidPrepareExecutor()
+    parent, scheduler = _scheduler(tmp_path, resumed)
+    scheduler.run_batch(parent, _assets(4))
+
+    assert ("chunk000", "prepare") in resumed.calls
+    assert ("chunk000", "render") in resumed.calls

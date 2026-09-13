@@ -3707,6 +3707,7 @@ class PipelineServices:
         )
         completed_set = set(completed)
         records = {}
+        parent_records = None
         for chunk in chunks:
             service, context = executor.service_context(chunk)
             chunk_completed = tuple(
@@ -3714,10 +3715,25 @@ class PipelineServices:
             )
             if not chunk_completed:
                 continue
-            chunk_records = service._read_raw_records(
-                context.download_root / "raw/metadata.csv",
-                chunk_completed,
-            )
+            try:
+                chunk_records = service._read_raw_records(
+                    context.download_root / "raw/metadata.csv",
+                    chunk_completed,
+                )
+            except ValidationError as error:
+                if not isinstance(error.__cause__, FileNotFoundError):
+                    raise
+                if parent_records is None:
+                    parent_records = {
+                        record["sha256"]: record
+                        for record in self._read_raw_records(
+                            parent.download_root / "raw/metadata.csv",
+                            completed,
+                        )
+                    }
+                chunk_records = tuple(
+                    parent_records[asset] for asset in chunk_completed
+                )
             for record in chunk_records:
                 asset = _validated_asset_sha(record.get("sha256"))
                 if asset in records and records[asset] != record:
