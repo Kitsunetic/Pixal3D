@@ -2181,3 +2181,9 @@ CPU 사용량 합계는 약 34.3 cores로 35-core quota 안이었다. 반면 hos
 CPU PSI `some avg60`은 약 93%로 타 사용자 CPU workload와 강한 경합이 관측됐다. 이는 낮은 GPU
 utilization과 production render 처리율에 영향을 주는 외부 요인이지만, 다른 사용자 작업은
 변경하지 않고 현재 worker 수와 quota를 유지했다.
+
+초기 staging 영향이 줄어든 07:08--07:12 UTC의 4분 20초 연속 관측에서는 GPU 1--5 active
+chunk의 완성된 8-view render 디렉터리가 82개에서 101개로 19개 증가했다. steady render 단계
+처리율은 aggregate 약 13.7초/asset, GPU당 환산 약 68.4초/asset이었다. 같은 구간 내내 다섯
+supervisor/worker process와 lease heartbeat가 유지됐고 queue는 failed/stale 0, 오류 로그도
+0건이었다. GPU0의 타 사용자 process는 계속 유지되어 재투입하지 않았다.
