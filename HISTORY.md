@@ -2146,3 +2146,11 @@ restart policy `no`를 확인했고, claim 없는 `validate_worker_environment()
 완료된 chunk를 건너뛰고 chunk003부터 재개했다. reset된 batch006은 새 chunk000--003 checkpoint를
 만들어 canonical raw에서 다시 시작했다. 재개 직후 queue는 completed 152, running 5, pending 599,
 failed/stale 0이고 초기 오류는 없었다. GPU4는 production에 사용하지 않았다.
+
+06:44 UTC 재확인에서 이전에 GPU4를 사용하던 타 사용자 compute process가 종료된 상태가 연속
+관측됐고 VRAM 사용량도 0 MiB였다. 다른 container를 변경하지 않고 GPU4만 노출한
+`youngwoo_diyscene_fast_node7-gpu4`를 같은 immutable image와 read-only raw/tools mount로
+추가했다. draining 상태에서 `bpy 4.5.1 LTS`, visible RTX 4090 한 장 및 전체 worker environment
+검증을 통과한 뒤에만 활성화했다. GPU4 worker는 reset된 batch007을 attempt 1로 claim해 running
+상태에 진입했고 초기 오류는 없었다. 여섯 container의 CPU quota 합계는 42 cores로 physical
+44-core 제한 이내이며 restart policy는 모두 `no`다.
