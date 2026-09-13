@@ -2316,3 +2316,13 @@ raw/tools read-only mount 및 claim 없는 worker를 모두 통과시켰다. wor
 다시 claim했는지 lease owner를 하나씩 확인했다. 재개 queue는 completed 153, running 6,
 pending 597, failed/stale 0이었고 supervisor 오류는 없었다. batch005/chunk001은 handoff 전
 산출물을 보존해 재개 직후 mesh 63, PBR 42, transforms 14, PNG 124개로 계속 증가했다.
+
+09:48 UTC GPU process ownership 재감사에서 타 사용자 `bang_vlm` container의 feature-cache
+process가 GPU5에 진입해 우리 batch008 renderer와 겹친 것을 발견했다. 다른 사용자 process와
+container는 변경하지 않고 node7-gpu5만 즉시 drain하고 batch008 lease를
+`gpu5-released-for-other-user` 사유로 공식 handoff한 뒤 전용 container를 중지했다. queue는
+completed 153, running 5, pending 598, failed/stale 0, active CPU quota 합계 35 cores가 됐다.
+해당 외부 compute process가 종료되고 GPU5가 비어 있는 상태를 30초 간격으로 연속 확인한 뒤,
+stopped container의 exact image와 claim 없는 preflight를 다시 확인하고 node를 활성화했다.
+batch008을 동일 GPU5 local scratch로 다시 claim한 후 queue는 running 6, pending 597로 복구됐고,
+추가 타 사용자 GPU5 process는 관측되지 않았다.
