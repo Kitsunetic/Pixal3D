@@ -743,7 +743,11 @@ def _required_checkpoint_dict(value, path: Path) -> PipelineCheckpoint:
             or not command
             or not isinstance(count, int)
             or isinstance(count, bool)
-            or not 0 <= count <= MAX_COMMAND_ATTEMPTS
+            or not 0 <= count <= MAX_COMMAND_ATTEMPTS + 1
+            or (
+                count == MAX_COMMAND_ATTEMPTS + 1
+                and command not in completed
+            )
         ):
             raise CheckpointError(f"invalid checkpoint attempts: {path}")
     if active_attempt is not None:
@@ -1338,8 +1342,9 @@ class PipelineRunner:
 
                     prior_attempts = checkpoint.attempts.get(command.name, 0)
                     if (
-                        prior_attempts >= MAX_COMMAND_ATTEMPTS
-                        and not repairing_completed_output
+                        prior_attempts
+                        >= MAX_COMMAND_ATTEMPTS
+                        + int(repairing_completed_output)
                     ):
                         try:
                             if self._valid_output(

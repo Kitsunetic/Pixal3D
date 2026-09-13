@@ -2388,3 +2388,17 @@ PBR 53개였으며, quality ledger에는 기존 schema failure 1개와 Blender t
 `unsupported_shader` family exclusion으로만 기록돼 shape/SS 처리 대상은 유지됐다. 이로써
 장시간 개별 Blender 실패가 queue failure나 무한 재시도로 번지지 않고, terminal asset과
 지원하지 않는 PBR family를 분리한 채 자동 복구되는 것을 canonical production에서 확인했다.
+
+같은 실행 중 GPU2 batch005가 한 차례 unit을 release한 뒤 같은 batch를 다시 claim해
+`geometry_encode_bundle` attempt 3으로 진행한 사실을 확인했다. supervisor 원문은
+chunk001/encode와 chunk003/render에서 `cannot persist attempt before launch: invalid checkpoint
+attempts`를 보고했다. completed-output 복구는 기본 3회 budget 소진 후 정확히 한 번의 post-budget
+attempt 4를 의도하고 테스트도 그 값을 요구했지만, durable checkpoint parser는 여전히 attempt를
+3 이하로 제한하고 있었다. 따라서 attempt 4를 저장하는 순간 infrastructure failure로 unit이
+release되고, 재claim 후 다른 chunk부터 반복하는 불일치였다.
+
+completed command에 한해서만 attempt 4 checkpoint를 허용하고, 이미 attempt 4가 기록된
+completed-output 복구는 attempt 5를 launch하지 않도록 수정했다. non-completed command의 attempt
+4는 save/load 시 계속 fail-closed한다. post-budget repair와 checkpoint round-trip 회귀 테스트
+5개, 전체 orchestrator 213개, 전체 suite 932개가 통과했다. Ruff 전체-file 검사는 기존 파일의
+baseline 위반 47개를 보고했으나 이번 변경 라인에서 새 위반은 없었다.

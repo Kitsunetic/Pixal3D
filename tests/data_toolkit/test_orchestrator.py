@@ -562,6 +562,33 @@ def test_completed_output_repair_stops_after_one_post_budget_failure(
     )
 
 
+def test_completed_output_repair_does_not_launch_fifth_attempt(
+    isolated_config, shard_context
+):
+    asset_sha = "a" * 64
+    write_instances(shard_context, (asset_sha,))
+    command = CommandSpec(
+        "prepare_bundle",
+        ("worker", "--instances", str(shard_context.instances)),
+    )
+    runner = RecordingRunner(isolated_config, commands=(command,))
+    runner.checkpoint.complete(command.name)
+    runner.checkpoint.attempts[command.name] = (
+        orchestrator_module.MAX_COMMAND_ATTEMPTS + 1
+    )
+    runner.checkpoint.quality_outcomes = {asset_sha: "completed"}
+    runner._restore_quality_state = lambda _context, _checkpoint: None
+    runner.validators[command.name] = lambda: False
+
+    with pytest.raises(PipelineStopped, match="attempt budget"):
+        runner.run_shard(shard_context)
+
+    assert runner.executed == []
+    assert runner.checkpoint.attempts[command.name] == (
+        orchestrator_module.MAX_COMMAND_ATTEMPTS + 1
+    )
+
+
 def test_completed_output_revalidation_preserves_pipeline_stop(
     isolated_config, shard_context
 ):
@@ -806,6 +833,36 @@ def test_checkpoint_roundtrip_is_atomic_and_validates_identity(
     assert not list(path.parent.glob("*.tmp"))
     with pytest.raises(CheckpointError, match="shard identity"):
         runner.load_checkpoint(path, "ABO-00001")
+
+
+def test_post_budget_completed_repair_checkpoint_roundtrips(
+    isolated_config, tmp_path
+):
+    runner = PipelineRunner(isolated_config, FakeResourceGuard(), {}, {})
+    path = tmp_path / "checkpoint.json"
+    checkpoint = PipelineCheckpoint("ABO-00000")
+    checkpoint.complete("prepare_bundle")
+    checkpoint.attempts["prepare_bundle"] = (
+        orchestrator_module.MAX_COMMAND_ATTEMPTS + 1
+    )
+
+    runner.save_checkpoint(path, checkpoint)
+
+    assert runner.load_checkpoint(path, "ABO-00000") == checkpoint
+
+
+def test_post_budget_attempt_requires_completed_command(
+    isolated_config, tmp_path
+):
+    runner = PipelineRunner(isolated_config, FakeResourceGuard(), {}, {})
+    path = tmp_path / "checkpoint.json"
+    checkpoint = PipelineCheckpoint("ABO-00000")
+    checkpoint.attempts["prepare_bundle"] = (
+        orchestrator_module.MAX_COMMAND_ATTEMPTS + 1
+    )
+
+    with pytest.raises(CheckpointError, match="attempts"):
+        runner.save_checkpoint(path, checkpoint)
 
 
 @pytest.mark.parametrize(
