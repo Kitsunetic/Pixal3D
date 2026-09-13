@@ -2346,9 +2346,15 @@ GPU0 batch003/chunk001에서는 한 ObjaverseXL asset
 `08e87a669e4ffac0d0607a21d94086e300152b55848f2878bd0e0adf3f71a555`의 external Blender
 `dump_mesh`가 900초 제한으로 timeout되어 mesh pickle이 생성되지 않았다. supervisor와
 chunk command는 계속 살아 있고 다음 asset의 PNG가 증가하므로 worker 장애나 memory leak이
-아닌 개별 입력 품질 문제로 분류했다. prepare 종료 후 validator가 이 asset만 terminal quality
-failure로 격리하는지 감시 중이며, 확인 전에는 worker를 재시작하거나 canonical output을
-수정하지 않는다.
+아닌 개별 입력 품질 문제로 분류했다. worker를 재시작하거나 canonical output을 수정하지 않고
+기존 validator가 종료 결과를 판정하도록 두었다.
+
+10:36:47 UTC prepare 종료 후 해당 timeout asset 하나만 `asset_validation` terminal
+`failure`로 quarantine됐고 worker는 즉시 `geometry_encode_bundle`로 진행했다. PBR pickle이
+없던 나머지 10개 asset은 모두 `unsupported_shader` 사유로 PBR-256/512/1024 family만
+제외됐으며 terminal asset failure로 확장되지 않았다. 즉 64개 입력 중 geometry/RGB candidate
+63개를 유지하면서 지원하지 않는 shader의 PBR family만 정확히 분리했고, timeout 하나가 전체
+chunk나 queue failure를 일으키지 않는 것을 production ledger로 확인했다.
 
 10:23 UTC에 GPU2의 batch005/chunk001 post-budget repair가 production에서 완료됐다.
 `pipeline.json`은 `stage_raw`, `prepare_bundle`, `geometry_encode_bundle`, 세 해상도 voxel cleanup,
