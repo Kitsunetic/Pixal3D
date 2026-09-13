@@ -2373,3 +2373,18 @@ family별 검증을 거쳐 output validation을 통과했다. geometry 구간 co
 batch005/chunk002의 eligible repair set으로 넘어가 3개 mesh dump, 3개 PBR dump와 native
 renderer를 시작했다. 따라서 완료 출력 누락을 복원하면서 기존 terminal failure는 재처리하지
 않는 `456251c`의 production 계약이 실제 canonical resume에서도 확인됐다.
+
+12:43:51 UTC에 GPU3의 batch006/chunk002가 중단됐던 `prepare_bundle`을 attempt 2로 자동
+재개했다. attempt 1에서 asset
+`0a32e4b3cfd356ab5232440603bd76baed377f9cd981867e990a1d62af17cc7a`의 external Blender
+`dump_mesh`가 900초 제한으로 timeout됐지만, 재시작이나 수동 checkpoint 변경 없이 scheduler가
+다른 active chunk를 진행한 뒤 해당 chunk로 돌아왔다. 재시도 eligibility는 64개 중 63개였고
+timeout asset은 제외돼 같은 900초 작업을 반복하지 않았다.
+
+12:52:45 UTC `prepare_bundle` attempt 2가 완료돼 worker는 `geometry_encode_bundle` attempt 1로
+진행했다. checkpoint의 render elapsed는 535.50초였다. 최종 geometry 입력은 shape/SS 62개와
+PBR 53개였으며, quality ledger에는 기존 schema failure 1개와 Blender timeout 1개만 terminal
+`asset_validation` quarantine으로 남았다. PBR이 없는 나머지 9개 asset은
+`unsupported_shader` family exclusion으로만 기록돼 shape/SS 처리 대상은 유지됐다. 이로써
+장시간 개별 Blender 실패가 queue failure나 무한 재시도로 번지지 않고, terminal asset과
+지원하지 않는 PBR family를 분리한 채 자동 복구되는 것을 canonical production에서 확인했다.
