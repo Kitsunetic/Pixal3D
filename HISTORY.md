@@ -2798,3 +2798,19 @@ resume하는 것을 확인했다. 실험 quota는 곧바로 10 cores로 되돌�
 waiter는 정상이다. GPU0/1/2/5는 타 사용자 process가 약 20.9 GiB씩 점유하고 GPU3/4에도 외부
 process가 남아 있어 scheduler가 안전하게 대기 중이다. GPU가 2분 동안 안정적으로 비면 exact
 image와 3-renderer policy로 checkpoint부터 자동 재개한다.
+
+## 2026-09-15 — 장시간 외부 GPU 점유 중 recovery 대기 검증
+
+22:02--23:22 UTC에 n7의 recovery container는 실행되지 않았고, reservation-aware scheduler는
+30초마다 `candidate=none`을 기록했다. GPU0/1/2/5는 기존 타 사용자 학습 process가 약 20.9 GiB씩
+사용했으며 GPU3/4에서는 별도 사용자의 VAE 평가 process 두 개가 계속 실행됐다. 순간 utilization이
+0%이고 메모리가 1.4--5 GiB 수준으로 내려간 구간도 있었지만 process와 CUDA context가 남아 있어
+free GPU로 간주하지 않았다. 여러 5--15분 read-only watcher에서 총 60회 이상 연속으로 recovery가
+없음을 확인했고, 외부 process/container는 변경하지 않았다.
+
+두 coordinator와 shard 00000/00002/00003/00004 waiter는 동일 PID로 계속 살아 있었다. 재사용
+가능한 stable scratch 산출물을 read-only로 집계한 결과 mesh/PBR/render 수는 각각
+00000=`64/49/5`, 00002=`64/57/9`, 00003=`64/47/19`, 00004=`45/11/7`이었다. 점파일 형태의
+중단 중간파일 9개는 stable 집계에서 제외하고 삭제하지 않았다. 정식 read-only `queue --action
+status`는 canonical을 completed 153, pending 602, failed 1, running/stale 0, active lease 0으로
+재확인했다. 따라서 recovery 완료·감사·격리 승격 전에는 canonical을 재개하지 않는다.
