@@ -2571,3 +2571,47 @@ checkpoint를 보존하고 shard0--1부터 처리했으며, 이후 load가 내�
 pickle 2개는 resume validator가 제거했고 유효 mesh 7개부터 재개했다. 세 active container의
 cgroup quota는 각각 4 cores, 합계 12 cores로 낮춰 load1을 72 아래에서 유지하고 있다. canonical
 queue와 pack/quality ledger는 격리 복구·감사가 끝날 때까지 변경하지 않는다.
+
+## 2026-09-14 — read-only raw cleanup 복구 및 shard 00001 완료
+
+격리 복구 shard 00001은 64개 asset의 render, geometry, latent, pack publication까지 모두
+완료한 뒤 `archive_raw` cleanup에서 `OSError: [Errno 18] Invalid cross-device link`로 종료됐다.
+raw GLB는 data2의 canonical raw subtree를 read-only nested bind mount한 것이고 quarantine은
+그 상위 writable mount에 만들어져, 같은 backing filesystem이어도 Linux mount boundary를
+가로지르는 `rename`이 `EXDEV`를 반환했다. 따라서 이 오류는 NFS 처리 속도나 산출물 손상이
+아니라 read-only 원본을 삭제하려던 publication 이후 정리 단계의 mount 계약 불일치였다.
+
+`_unlink_regular_beneath`가 quarantine rename에서 정확히 `EXDEV`가 발생한 경우에만 externally
+mounted raw를 그대로 보존하고 성공으로 처리하도록 최소 수정했다. 다른 rename 오류와 unsafe
+path 오류는 계속 전파한다. 수정 전 실제 예외를 재현하는
+`test_raw_delete_retains_source_when_quarantine_crosses_mount_boundary`를 추가했고, 수정 후 cleanup
+안전 테스트 4개와 data_toolkit 전체 928개 테스트가 통과했다. host `/tmp`가 `noexec`라 실패한
+Blender fixture 4개는 executable `/dev/shm` TMPDIR에서 4/4 통과했다. 수정 commit은
+`5271d8e76025b66c9843d90d768f97f035a66e6f`, data_toolkit tree는
+`cf10b656e581f9a2ea3f47277fd31356400a54ee`이며 fork의 production branch에 push했다. n7 image
+`pixal3d-fast:5271d8e`는
+`sha256:98668aa74ec52fdec6c438712d0b8acf6709713b949ba1b2d7a6ef0f2e073fef`로 고정했다.
+
+첫 새-image resume은 기존 published pack이 `tool_commit=294521a...`를 기록한 반면 isolated
+recovery config에는 compatibility attestation이 없어 현재 commit `5271d8e...`만 허용되면서,
+이미 완료된 geometry와 pack을 다시 검증·생성한 뒤 `different valid published pack`으로
+fail-closed했다. 기존 pack hash와 member set은 변하지 않았고 checkpoint도 `build_packs`
+완료를 보존하고 있었다. `5271d8e`의 제품 변경은 publication 이후 raw cleanup뿐이므로, 이
+격리 recovery 실행에만 `PIXAL3D_TOOL_COMMIT=294521a9310c4401be2c988fabd3e406d2a4b72e`를 적용해
+기존 pack provenance를 유지했다. canonical config나 production output contract는 바꾸지 않았다.
+
+GPU 3이 memory 100 MiB 미만, utilization 0%, compute PID 없음, host load1 50 미만 상태를
+30초 간격 10회 연속 통과한 뒤 shard 00001을 one-visible-GPU container로 재개했다. 실제
+container는 CPU 10 cores, RAM 40 GiB, shm 32 GiB로 제한했고 raw와 Blender tools를 read-only로
+mount했다. GPU 재연산 없이 기존 publication 검증과 cleanup만 수행해 91초 만에 exit 0,
+`OOMKilled=false`로 끝났다. 최종 checkpoint는 11개 command가 모두 완료되고
+`active_attempt=None`, quality ledger는 completed 64/quarantine 0이다. production pack 8개와
+raw archive 1개의 manifest/checksum을 공식 `pipeline.cli audit`로 다시 검증해 exit 0을
+확인했다.
+
+나머지 recovery shard 00000/00002/00003/00004는 n7의 다른 사용자 compute process가 GPU를
+점유하는 동안 durable coordinator에서 대기한다. launcher는 동일한 5분 안정성 gate를
+통과한 GPU만 선택하며 foreign process가 실행 중인 GPU에는 container를 만들지 않는다.
+이 시점 canonical queue는 completed 153, pending 602, failed 1(batch005), running/stale 0이고
+active lease는 없다. 격리 shard 전체가 완료·감사되기 전에는 canonical pack, raw archive,
+checkpoint, quality ledger 또는 queue marker를 변경하지 않는다.
