@@ -2708,3 +2708,12 @@ failure 중 앞 64개는 shard 00004와 일치하며 마지막
 recovery 입력에서 제외돼 있다. 따라서 최종 승격 계약은 batch002 completed 256개,
 batch005 completed 255개와 quarantined timeout 1개이며, 모든 격리 pack/raw manifest 감사가
 끝난 뒤에만 기존 191개와 recovery 64개를 병합한다.
+
+최신 `pixal3d-fast:8754e9c` image를 사용한 CPU-only `pipeline.cli audit`로 완료 shard 00001의
+64개 output, 8개 family pack 및 raw archive를 다시 검사했고 약 74초 후 exit 0을 확인했다.
+canonical batch005에서 재사용할 191개 성공 output의 실제 scratch는
+`/file3/youngwoo/pixal3d-n7-runtime/local/gpu2/preprocess/active/ObjaverseXL_sketchfab-00001/batch005`
+이며 5.6 GiB로 보존돼 있다. 이후 shard 00003/00004가 GPU3/4에서 재개됐으나 타 사용자 compute
+PID가 들어와 우리 container만 중지됐다. 두 실행도 exit 137, `OOMKilled=false`였고 각각
+`prepare_bundle 2→1`, `active_attempt=None`으로 환급됐다. 재확인한 canonical queue는
+completed 153, pending 602, failed 1, running/stale 0이며 active lease가 없다.
