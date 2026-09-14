@@ -5634,6 +5634,32 @@ def test_raw_delete_tombstone_detects_identity_swap_without_deleting_replacement
     assert replacement in survivors.values()
 
 
+def test_raw_delete_retains_source_when_quarantine_crosses_mount_boundary(
+    tmp_path,
+):
+    # Given: a regular raw file whose quarantine rename crosses a mount boundary.
+    root = tmp_path / "raw-delete-cross-mount"
+    relative = Path("models/item.glb")
+    source = root / relative
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"shared read-only payload")
+
+    def reject_cross_mount_rename(*_args, **_kwargs):
+        raise OSError(errno.EXDEV, os.strerror(errno.EXDEV))
+
+    # When: archival cleanup attempts its race-safe quarantine rename.
+    removed = orchestrator_module._unlink_regular_beneath(
+        root,
+        relative,
+        rename_noreplace=reject_cross_mount_rename,
+    )
+
+    # Then: externally mounted raw input is retained without a quarantine leak.
+    assert removed == 0
+    assert source.read_bytes() == b"shared read-only payload"
+    assert not tuple(root.glob(".pixal3d-quarantine.*"))
+
+
 def test_raw_delete_post_validation_swap_cannot_delete_replacement(
     tmp_path, monkeypatch
 ):

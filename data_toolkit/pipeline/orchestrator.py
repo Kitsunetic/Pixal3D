@@ -2787,12 +2787,17 @@ def _unlink_regular_beneath(
                     dir_fd=root_fd,
                 )
                 quarantined_name = "payload"
-                rename_noreplace(
-                    source_name,
-                    quarantined_name,
-                    directory_fd,
-                    quarantine_fd,
-                )
+                try:
+                    rename_noreplace(
+                        source_name,
+                        quarantined_name,
+                        directory_fd,
+                        quarantine_fd,
+                    )
+                except OSError as error:
+                    if error.errno != errno.EXDEV:
+                        raise
+                    return 0
                 quarantined_fd = os.open(
                     quarantined_name,
                     flags | os.O_NONBLOCK,
