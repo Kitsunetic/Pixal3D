@@ -2717,3 +2717,29 @@ canonical batch005에서 재사용할 191개 성공 output의 실제 scratch는
 PID가 들어와 우리 container만 중지됐다. 두 실행도 exit 137, `OOMKilled=false`였고 각각
 `prepare_bundle 2→1`, `active_attempt=None`으로 환급됐다. 재확인한 canonical queue는
 completed 153, pending 602, failed 1, running/stale 0이며 active lease가 없다.
+
+## 2026-09-15 — canonical 승격 staging 검증 및 recovery monitor 보강
+
+canonical batch005의 기존 성공 output을 canonical mount 없이 read-only source에서
+`/dev/shm/pixal3d-canonical-promotion-n7-20260915/batch005-output-base`로 복사했다. 원본과
+staging은 각각 6,743 files, 2,695,153,979 bytes였고 파일별 SHA-256 manifest를 비교해 완전
+일치했다. 완료 recovery shard 00001의 8개 pack도 `verify_pack` 후 별도 staging에 안전하게
+추출했다. manifest와 추출본의 2,272 members, 941,803,633 bytes 및 모든 파일 SHA-256이
+일치했다. 해당 shard의 64개 asset은 recovery selection의 canonical batch002 positions
+64--127과 순서까지 같고 checkpoint, quality ledger 및 pack scope도 일치한다.
+
+GPU ownership monitor에는 `nvidia-smi`에서 PID를 읽은 직후 짧은 Blender child가 종료되면
+뒤이어 실행한 `docker top`에서 사라져 외부 PID로 오인할 수 있는 sampling race가 있었다.
+격리된 PID lifetime test에서 기존 판정이 종료된 PID를 foreign으로 분류하는 것을 재현했고,
+처음 unknown이었던 PID는 GPU presence를 다시 측정하고 container PID snapshot도 새로 읽은 뒤
+두 번째 검사에서도 GPU에 남아 있고 container에 없을 때만 foreign으로 확정하도록 임시 n7
+recovery launcher를 보강했다. `bash -n`과 vanished-PID green test를 통과했으며 launcher
+SHA-256은 `723f531da1cb43e7d4ca46da27599a74383cb82652ba0e1dbcd083e315e50b2a`다. 이 변경은
+canonical code/output이 아니라 recovery 전용 launcher에만 적용했다.
+
+20:49--20:52 UTC에 GPU3과 GPU4가 2분 안정성 gate를 통과해 shard 00000/00002가 각각
+one-visible-GPU container로 재개됐다. 각 container는 CPU 10 cores, RAM 40 GiB, shm 32 GiB로
+제한되고 raw dataset과 Blender tools는 read-only다. 21:00 UTC 기준 두 worker 모두 살아 있고
+shard 00000은 mesh 64/64, PBR 33/64, shard 00002는 mesh 64/64, PBR 53/64까지 누적했다.
+동시 CPU quota는 20 cores로 44-core 상한 이내이며, GPU0/1/2/5의 타 사용자 process와
+canonical queue/output은 변경하지 않았다.
