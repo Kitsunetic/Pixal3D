@@ -2743,3 +2743,34 @@ one-visible-GPU container로 재개됐다. 각 container는 CPU 10 cores, RAM 40
 shard 00000은 mesh 64/64, PBR 33/64, shard 00002는 mesh 64/64, PBR 53/64까지 누적했다.
 동시 CPU quota는 20 cores로 44-core 상한 이내이며, GPU0/1/2/5의 타 사용자 process와
 canonical queue/output은 변경하지 않았다.
+
+## 2026-09-15 — recovery renderer concurrency 복원
+
+실제 recovery worker argv가 `--render_workers_per_gpu 1`로 생성돼, 이미 검증한 GPU당 renderer
+3개 정책이 임시 resume helper에서만 비활성화된 것을 확인했다. shard 00000/00002의 실행 중
+Blender를 강제로 끊지 않고 Docker의 90초 graceful stop으로 종료했으며 둘 다 `OOMKilled=false`였다.
+전용 operator-handoff helper로 active `prepare_bundle` 시도만 각각 2→1, 3→2로 환급하고 원본
+checkpoint, before/after SHA-256, 사유와 시각을
+`control/remediations/isolated-recovery-handoffs/manual-renderers3-20260914T2108Z-*`에 보존했다.
+canonical checkpoint/output에는 쓰지 않았다.
+
+resume helper의 runtime policy만 `(1,)`에서 `(3,)`으로 바꿨다. config hash는
+`578e495f060141ff215711d7e5229871c96f38471aac47db5b765a3f3d08d911`로 그대로이고 helper는
+Ruff format/check, no-excuse 검사와 `py_compile`을 통과했다. n7 배포본 SHA-256은
+`1cf8e4e556564878cdcb54d22476eef37ae0eaf8e4fc5499f67b2f0d410697b6`이며 이전 파일은
+`/tmp/pixal3d_quality_recovery_resume_20260913.py.before-renderers3-20260915`에 보존했다.
+우리 r3 coordinator process group만 종료·재시작했고 선행 coordinator와 타 사용자 작업은
+변경하지 않았다.
+
+2분 GPU 안정성 gate 뒤 선행 coordinator가 shard 00004를 physical GPU3에, r3 coordinator가
+shard 00003을 physical GPU4에 시작했다. 두 container 모두 exact image
+`pixal3d-fast:8754e9c`, GPU 하나만 노출, CPU 10 cores, RAM 40 GiB, shm 32 GiB이며 raw/tools는
+read-only다. 실제 `prepare_bundle` argv는 `--render_workers_per_gpu 3`, 세 자식은 각각
+`world_size=3`의 rank 0/1/2로 확인했다. 초기 장기-tail cohort에서 shard 00003은 약 12.4분에
+신규 render 3개, shard 00004는 약 14.5분에 신규 render 3개를 원자적으로 게시했다. 이는
+약 4.0--4.8분/asset/GPU의 초기 처리율로, 직전 single-renderer 첫 자산 442.62초보다는 빠르지만
+일반 100-asset benchmark의 53.55초/asset과 직접 비교할 수 없는 무거운 recovery 자산이다.
+준비 단계에는 mesh/PBR Blender와 renderer가 겹쳐 각 container가 약 9.8--10.1 CPU cores로
+cgroup quota를 소진했으나 두 worker 합계 quota 20 cores는 44-core 상한 이내였고 host CPU는
+샘플 구간에 56--62% idle, I/O wait 0--1%였다. VRAM은 약 0.1--10.3 GiB 범위였으며 남은
+shard 00000/00002는 GPU가 비는 동안 예약-aware waiter에서 대기한다.
