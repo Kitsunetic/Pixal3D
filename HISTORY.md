@@ -2615,3 +2615,23 @@ raw archive 1개의 manifest/checksum을 공식 `pipeline.cli audit`로 다시 �
 이 시점 canonical queue는 completed 153, pending 602, failed 1(batch005), running/stale 0이고
 active lease는 없다. 격리 shard 전체가 완료·감사되기 전에는 canonical pack, raw archive,
 checkpoint, quality ledger 또는 queue marker를 변경하지 않는다.
+
+## 2026-09-15 — n7 burst GPU 경합에 맞춘 recovery scheduler 조정
+
+GPU 3이 기존 30초 간격 10회 안정성 gate를 통과한 뒤 recovery shard 00002를
+`pixal3d-fast:5271d8e` exact image로 재개했다. container는 GPU 3 한 장만 노출하고 CPU 10 cores,
+RAM 40 GiB, shm 32 GiB로 제한했으며 canonical raw와 Blender tools mount는 read-only였다.
+약 7분 동안 유효 mesh pickle은 18개에서 43개, PBR pickle은 10개에서 22개, 완성 render는
+0개에서 2개로 증가했다. 이후 타 사용자 PID 3361978이 GPU 3에 진입하자 15초 ownership monitor가
+우리 container만 중지했다. Docker exit code는 stop에 따른 137이었고 `OOMKilled=false`였으며,
+부분 산출물과 격리 checkpoint는 그대로 보존됐다.
+
+n7의 타 작업은 GPU 3/4에 약 2--3분 간격으로 진입·이탈해 5분 gate가 반복 리셋됐다. 외부
+process/container에는 손대지 않고, launch 직전 memory/utilization/compute-PID 재검사와 launch 후
+15초 foreign-PID 감시는 그대로 유지한 채 안정성 표본만 10회에서 5회로 줄였다. 첫 표본부터
+launch까지 2분이며 launcher 원본은
+`wait-shard-5271d8e.sh.before-2m-gate-20260915T0414KST`에 보존했다. 수정본은 `bash -n`을
+통과했고 SHA-256은 `f9075eaa630e05f5cb211898b445703698a9c474304d81c1874e0e247b294899`다.
+변경 당시 recovery worker가 0개임을 확인한 뒤 우리 coordinator process group만 종료하고 PID
+3667738로 다시 시작했다. canonical queue/output에는 변경이 없으며 네 미완료 recovery shard는
+같은 exact image와 40-core 합계 상한으로 계속 대기한다.
