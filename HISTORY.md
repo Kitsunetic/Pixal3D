@@ -2774,3 +2774,27 @@ read-only다. 실제 `prepare_bundle` argv는 `--render_workers_per_gpu 3`, 세 
 cgroup quota를 소진했으나 두 worker 합계 quota 20 cores는 44-core 상한 이내였고 host CPU는
 샘플 구간에 56--62% idle, I/O wait 0--1%였다. VRAM은 약 0.1--10.3 GiB 범위였으며 남은
 shard 00000/00002는 GPU가 비는 동안 예약-aware waiter에서 대기한다.
+
+## 2026-09-15 — 외부 GPU 경합 handoff 및 CPU resource guard 확인
+
+3-renderer recovery를 계속 관찰한 결과 shard 00003은 누적 render 19개, shard 00004는 6개까지
+진행했다. 이후 physical GPU3에 타 사용자 PID 1606280, GPU4에 PID 2029082가 들어오자 ownership
+monitor가 각각 우리 shard 00004/00003 container만 중지했다. 두 실행은 Docker exit 137,
+`OOMKilled=false`였고 operator handoff가 active `prepare_bundle`을 null로 지우면서 attempt를
+각각 2→1로 환급했다. 원본과 변경 checkpoint hash를 포함한 증거는
+`control/remediations/isolated-recovery-handoffs/pixal3d-quality-recovery-resume-00004-8754e9c-gpu3-20260914T211036Z`
+및 `...-00003-8754e9c-gpu4-20260914T211243Z`에 보존했다. 부분 mesh/PBR/render 결과는 다음
+resume에서 재사용하며 canonical에는 쓰지 않았다.
+
+shard 00003만 실행 중일 때 CPU quota가 병목인지 확인하기 위해 정확히 해당 container의 quota만
+10→14 cores로 잠시 올렸다. 최대 동시 구성에서도 14+3×10=44 cores로 물리 코어 상한을 넘지 않는
+조건이었다. 그러나 host의 다른 작업 때문에 전체 CPU가 91--94%에 도달하자 product resource
+guard가 `CPU soft duration` 사유로 worker leaf를 즉시 pause했고, 외부 부하가 내려가면 자동
+resume하는 것을 확인했다. 실험 quota는 곧바로 10 cores로 되돌렸고 guard 임계값은 완화하지
+않았다. 원시 telemetry는
+`/file2/youngwoo/pixal3d-quality-recovery-n7-20260913/control/telemetry/resources.jsonl`에 남아 있다.
+
+22:07 UTC 기준 recovery container는 없으며 coordinator 두 개와 shard 00000/00002/00003/00004
+waiter는 정상이다. GPU0/1/2/5는 타 사용자 process가 약 20.9 GiB씩 점유하고 GPU3/4에도 외부
+process가 남아 있어 scheduler가 안전하게 대기 중이다. GPU가 2분 동안 안정적으로 비면 exact
+image와 3-renderer policy로 checkpoint부터 자동 재개한다.
