@@ -2660,3 +2660,32 @@ failing-first test는 helper가 없어서 import 단계에서 실패했고, 구�
 canonical checkpoint 복사본을 사용한 실사용 QA에서도 `prepare_bundle 2→1`, active attempt
 clear, 원본 backup과 일치하는 remediation hash를 확인했다. 실제 recovery checkpoint 복구와
 재개는 새 exact image 및 launcher 통합 후에만 수행한다.
+
+helper commit `8754e9c84b2282aebc77908c0a15903ee6925bb5`와 data_toolkit tree
+`c201f1926bda41bfe8e0708c192453a0514dc4c6`를 fork의 production branch에 push하고, 기존
+검증 image를 수정하지 않은 채 n7 image `pixal3d-fast:8754e9c`
+(`sha256:bf77b70ce1abc76c34753dae61c2be9a7135b036996c4d2f5eed61870e6f57fa`)를 새로
+생성했다. image revision/tree label과 helper import를 검증했다. active attempt가 남은 recovery
+shard 00000/00003/00004는 각각 `prepare_bundle 2→1`로 환급했다. shard 00002는 거부된 resume이
+active attempt를 이미 null로 확정했으므로 현재 checkpoint SHA-256
+`4e2b53fa...c1e59ef7`, attempts 3, completed download/stage_raw를 모두 precondition으로 고정한
+1회성 복구로 3→2로 환급했다. 네 원본과 before/after hash 및 사유는
+`control/remediations/isolated-recovery-handoffs` 아래에 보존했다.
+
+새 worker가 CPU-only mesh/PBR 준비 중에는 CUDA context가 없어 GPU memory/utilization만으로는
+이미 예약된 GPU를 식별할 수 없었다. 실제 GPU3 container가 실행 중인데 다음 launcher가
+`candidate=3 stable=4/5`까지 선택하는 것을 확인하고 아직 container를 만들지 않은 waiter만
+중지했다. running recovery container의 `io.pixal3d.physical-gpu` label을 후보에서 제외하고
+launch 직전에도 같은 reservation을 재검사하도록 launcher를 보강했다. 배포 SHA-256은
+`9e51542ccf1be98ee7962af9845035d4248c68ca4f89e0c4f3f918735e9c56c2`다. 수정 후 GPU3은
+shard 00004에 예약된 채 shard 00003이 GPU4로 시작했고, 다음 waiter는 `candidate=none`을
+기록했다.
+
+GPU4에 타 사용자 PID 140675가 들어온 실제 경합에서는 monitor가 우리 shard 00003 container만
+중지했다. 이어 GPU3에 PID 169381이 들어왔을 때도 shard 00004만 중지됐다. 두 Docker 상태는
+exit 137, `OOMKilled=false`였고 새 helper가 각각 `prepare_bundle 2→1`을 환급해 원본 checkpoint와
+remediation hash를 저장했다. 두 coordinator는 exit 75를 받아 즉시 안전 대기로 복귀했다.
+shard 00004는 중단 전 mesh 29, PBR 10까지 부분 결과를 늘렸으며 다음 resume에서 이를 재사용한다.
+continuation coordinator PID 102221과 선행 coordinator PID 4189627은 reservation-aware launcher로
+네 미완료 shard를 자동 재시도한다. 실행 중 recovery CPU quota 합계는 GPU당 10 cores이고 최대
+두 GPU가 가용할 때도 20 cores로 44-core 상한 이하다.
