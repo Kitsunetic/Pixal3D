@@ -9,6 +9,14 @@ output.glb
 autotune_cache.json
 errors_view.txt
 
+# Local agent and experiment artifacts
+/.omo/
+/autoresearch-results/
+/temp/
+/.codex_*
+/n[0-9]*-canonical-queue.yaml
+/n[0-9]*-validation.yaml
+
 # Virtual environment
 venv/
 .venv/
