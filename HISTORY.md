@@ -2689,3 +2689,22 @@ shard 00004는 중단 전 mesh 29, PBR 10까지 부분 결과를 늘렸으며 �
 continuation coordinator PID 102221과 선행 coordinator PID 4189627은 reservation-aware launcher로
 네 미완료 shard를 자동 재시도한다. 실행 중 recovery CPU quota 합계는 GPU당 10 cores이고 최대
 두 GPU가 가용할 때도 20 cores로 44-core 상한 이하다.
+
+## 2026-09-15 — recovery 재개 handoff 및 canonical 승격 사전 확인
+
+새 image worker는 shard 00000을 GPU3, shard 00002를 GPU4에서 재개해 각각 CPU 10 cores와
+RAM 40 GiB 상한으로 `dump_mesh`/`dump_pbr` prepare를 진행했다. 2026-09-14 20:11 UTC에
+타 사용자 compute PID가 GPU3과 GPU4에 들어오자 ownership monitor가 우리 두 container만
+중지했다. 두 container 모두 Docker exit 137, `OOMKilled=false`였고 helper는 shard 00000의
+`prepare_bundle` attempt를 2→1, shard 00002를 3→2로 환급한 뒤 remediation evidence를
+보존했다. canonical에는 쓰기가 없었고 coordinator는 다시 2분 안정성 gate를 기다린다.
+
+승격 대상은 recovery selection이 고정한 canonical
+`ObjaverseXL_sketchfab-00001/batch002`와 `batch005`임을 read-only로 재확인했다. batch002의
+기존 checkpoint는 failure 256개, batch005는 completed 191개와 failure 65개다. batch002의
+256개 failure는 recovery shard 00000--00003의 64개씩과 정확히 일치한다. batch005의 65개
+failure 중 앞 64개는 shard 00004와 일치하며 마지막
+`09b4609f7082aac37e7e5a125511e767cdc9787d096ed78e1accb7ad7b7efd44`는 기존 genuine timeout으로
+recovery 입력에서 제외돼 있다. 따라서 최종 승격 계약은 batch002 completed 256개,
+batch005 completed 255개와 quarantined timeout 1개이며, 모든 격리 pack/raw manifest 감사가
+끝난 뒤에만 기존 191개와 recovery 64개를 병합한다.
