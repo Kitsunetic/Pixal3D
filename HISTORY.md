@@ -2814,3 +2814,21 @@ free GPU로 간주하지 않았다. 여러 5--15분 read-only watcher에서 총 
 중단 중간파일 9개는 stable 집계에서 제외하고 삭제하지 않았다. 정식 read-only `queue --action
 status`는 canonical을 completed 153, pending 602, failed 1, running/stale 0, active lease 0으로
 재확인했다. 따라서 recovery 완료·감사·격리 승격 전에는 canonical을 재개하지 않는다.
+
+## 2026-09-15 — master 정리 및 n7 GPU 점유 상태
+
+로컬 agent·실험 산출물이 production 이력에 섞이지 않도록 `.omo/`,
+`autoresearch-results/`, `temp/`, root의 `.codex_*` 및 host별 임시 queue/validation YAML을
+`.gitignore`에 추가했다. 별도로 남아 있던 prepared-output comparator는 tar manifest를 먼저
+검증한 뒤 비-PNG 파일과 transform을 byte-exact, latent NPZ array와 PNG alpha를 exact 비교하고
+stochastic RGB 값만 허용하는 도구와 회귀 테스트로 편입했다. Ruff와 no-excuse 검사는 통과했고,
+output comparison·packing·validation 관련 테스트는 `82 passed`였다.
+
+23:53:11--23:53:21 UTC에 n7 host에서 5초 간격으로 세 번 확인한 결과 GPU 0/1/2/5는
+`gs_anigauss`의 네 `run.py config/a3d512_*.yaml` process가 각각 약 20.9 GiB를 사용하며 모든
+표본에서 utilization 100%였다. GPU 3/4는 `jaehyeok` container의 사용자 `inha`가 실행한 두
+`evaluate_vae.py` process가 각각 약 5.1/5.0 GiB를 사용했고, 앞 표본에서 0--4%였다가 마지막
+표본에서 둘 다 100%로 상승했다. 따라서 여섯 GPU 모두 점유 상태이며 recovery가 사용할 수 있는
+GPU는 없다. 실행 중인 Pixal3D GPU process는 없고, 남아 있는 Pixal3D container 두 개는
+`sleep infinity`와 관리용 shell만 실행 중이다. 이 점검에서 타 사용자 process/container와
+canonical data는 변경하지 않았다.
