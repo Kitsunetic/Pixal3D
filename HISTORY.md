@@ -2635,3 +2635,28 @@ launch까지 2분이며 launcher 원본은
 변경 당시 recovery worker가 0개임을 확인한 뒤 우리 coordinator process group만 종료하고 PID
 3667738로 다시 시작했다. canonical queue/output에는 변경이 없으며 네 미완료 recovery shard는
 같은 exact image와 40-core 합계 상한으로 계속 대기한다.
+
+같은 recovery config의 검증된 `load_soft=72`와 달리 임시 launcher만 load1 50을 hard limit으로
+사용해 안정 표본이 불필요하게 리셋되는 것도 확인했다. launch 직전 GPU memory/utilization/PID
+검사는 유지하고 load gate만 72로 일치시켰으며, 수정 launcher SHA-256은
+`6867c7ec104f59fdd4086fd5d47df2ed33c7d994bdf6cd9f29088999eedb7a02`다. 이 gate를 통과한
+shard 00002 resume은 7.2초 뒤 `command attempt budget already exhausted`로 종료됐다. Docker
+상태는 exit 1, `OOMKilled=false`였고 GPU context 생성 전 Python traceback이 발생했으므로 GPU
+충돌, OOM, mount 실패는 배제했다.
+
+직전 shard 00002 worker는 약 7분간 정상 산출물을 늘리다가 foreign GPU PID 감지로 의도적으로
+중지됐지만, durable checkpoint에는 `prepare_bundle`의 active attempt 3이 남았다. 다음 resume은
+abandoned attempt를 실패로 확정해 `active_attempt=null`, attempts 3으로 저장한 뒤 budget에서
+거부했다. shard 00000/00003/00004에도 같은 이유로 active attempt 2가 남아 있어 coordinator를
+우리 process group에 한해 중지했다. canonical queue/output과 타 사용자 process/container에는
+변경이 없다.
+
+production queue handoff가 이미 사용하는 원칙과 같이, isolated recovery를 의도적으로 중지할
+때 active attempt 하나만 환급하고 원본 checkpoint, before/after SHA-256, 사유와 시각을 별도
+remediation evidence에 원자적으로 기록하는 `preserve_isolated_handoff_attempt`를 추가했다.
+failing-first test는 helper가 없어서 import 단계에서 실패했고, 구현 후 operator handoff tests
+3개와 executable `/dev/shm` TMPDIR의 data_toolkit 전체 933개 테스트가 통과했다. Ruff 오류는
+0개, basedpyright 오류는 0개이며 기존 strict-mode 경고 35개만 남았다. n7의 임시 overlay image와
+canonical checkpoint 복사본을 사용한 실사용 QA에서도 `prepare_bundle 2→1`, active attempt
+clear, 원본 backup과 일치하는 remediation hash를 확인했다. 실제 recovery checkpoint 복구와
+재개는 새 exact image 및 launcher 통합 후에만 수행한다.

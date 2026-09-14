@@ -2,9 +2,10 @@ import json
 from datetime import datetime, timezone
 
 from data_toolkit.pipeline.operator_handoff import (
+    IsolatedHandoff,
+    preserve_isolated_handoff_attempt,
     preserve_operator_handoff_attempts,
 )
-
 
 NOW = datetime(2026, 7, 28, 2, 30, tzinfo=timezone.utc)
 
@@ -104,3 +105,36 @@ def test_operator_handoff_records_noop_when_no_command_is_active(tmp_path):
     assert evidence["schema_version"] == 2
     assert evidence["checkpoint_root"] == str(checkpoint_root)
     assert evidence["refunded_attempts"] == []
+
+
+def test_isolated_handoff_refunds_active_attempt_with_evidence(tmp_path):
+    checkpoint = tmp_path / "control/checkpoints/source/source-00002/batch000.json"
+    checkpoint.parent.mkdir(parents=True)
+    value = _checkpoint()
+    value["shard_id"] = "source-00002"
+    original = json.dumps(value, sort_keys=True).encode()
+    checkpoint.write_bytes(original)
+    evidence_root = tmp_path / "control/remediations/isolated-stop"
+
+    result = preserve_isolated_handoff_attempt(
+        IsolatedHandoff(
+            checkpoint_path=checkpoint,
+            evidence_root=evidence_root,
+            shard_id="source-00002",
+            reason="foreign GPU process appeared",
+            now=NOW,
+        )
+    )
+
+    repaired = json.loads(checkpoint.read_text())
+    assert result == ("dump_pbr", 3, 2)
+    assert repaired["attempts"]["dump_pbr"] == 2
+    assert repaired["active_attempt"] is None
+    assert (evidence_root / "pipeline.before.json").read_bytes() == original
+    evidence = json.loads((evidence_root / "remediation.json").read_text())
+    assert evidence["shard_id"] == "source-00002"
+    assert evidence["refunded_attempt"] == {
+        "attempts_after": 2,
+        "attempts_before": 3,
+        "command": "dump_pbr",
+    }
