@@ -2839,3 +2839,64 @@ canonical data는 변경하지 않았다.
 같은 UID 1013을 `rvi`로 매핑함을 확인했다. `docker top`의 `USER` 열은 host 이름을 표시하므로
 이를 container 내부 사용자 소유권으로 해석하면 안 된다. 위 GPU3/4 process는 별도 `inha`
 사용자의 작업이 아니라 n7jh 자체의 `rvi` 작업이다.
+
+## 2026-09-15 — recovery 전수 감사, canonical 승격 및 6-GPU production 재개
+
+격리 recovery shard `00000`--`00004`의 checkpoint, quality ledger, 40개 prepared pack
+(8 families × 5 shards), 5개 raw archive를 전수 감사했다. 모든 pack은 공식 `verify_pack`으로
+member path·size·SHA-256을 다시 확인했고, 모든 checkpoint는 11개 command 완료 및
+`active_attempt=None`이었다. shard별 terminal 결과는 `61/3`, `64/0`, `62/2`, `60/4`,
+`59/5`(completed/quarantined)였다. recovery `00000`--`00003`은 canonical batch002의 256개와
+정확히 일치하고, `00004`는 batch005의 기존 failure 65개 중 앞 64개와 일치했다. recovery 입력에서
+제외된 마지막 timeout asset
+`09b4609f7082aac37e7e5a125511e767cdc9787d096ed78e1accb7ad7b7efd44`는 quarantine으로 유지했다.
+
+r2 coordinator의 최종 error는 산출물 실패가 아니라 이전 launcher 종료 이력을 누적한 wrapper
+상태였다. coordinator 교체 시 shard `00000/00002/00003` launcher가 exit 143으로 종료됐고 이전
+`00002` launcher 한 번이 exit 1을 남겨 `launcher_failure=1`이 유지됐다. 반면 `00004`는 r2에서
+exit 0/`OOMKilled=false`로 완료·검증됐고, 나머지 shard는 r3에서 모두 완료·검증됐다. 따라서 r2
+wrapper error가 최종 durable artifact에 영향을 주지 않았다는 것을 위 전수 checkpoint/pack/raw
+감사로 확인했다.
+
+canonical을 read-only로 둔 채 `/dev/shm/pixal3d-canonical-promotion-n7-20260915/candidate-v1`에
+batch002/005 candidate를 만들었다. 생성 과정과 별도 verifier에서 16개 family pack 및 2개 raw
+archive를 두 번 검증했고 checkpoint, quality ledger, prepared index의 asset scope와 checksum도
+일치했다. 최종 결과는 batch002 `247 completed/9 quarantined`, batch005
+`250 completed/6 quarantined`이며, unsupported shader를 제외한 PBR 포함 수는 각각 219/208이다.
+이는 앞서 기록한 `256/0`, `255/1` 예상치를 실제 recovery 결과로 정정한 값이다.
+
+승격은 기존 canonical 파일을
+`control/remediations/canonical-promotion-20260915/backups`에 보존하고 40개 파일을 같은
+filesystem의 임시 sibling에서 atomic replace했다. 설치 후 최신 runtime의 공식 `_audit_batch`로
+batch002/005의 prepared pack과 raw archive를 다시 통과시킨 뒤에만 batch005 failed marker를
+`control/runtime/work_queue/remediated/n7-quality-recovery-promotion-20260915`로 이동하고 completed로
+adopt했다. 승격 증거는
+`/file2/youngwoo/pixal3d/control/remediations/canonical-promotion-20260915/promotion.json`이며,
+queue는 `completed=154, failed=0, pending=602, running=0, stale=0`이 됐다.
+
+최초 detached worker 시작에서는 24시간 freshness를 넘은 pilot/hardware evidence와 `/file3`의
+13.8% local free 비율(설정 hard floor 15%)을 발견했다. 6개 worker를 즉시 중지했고 이 구간에
+terminal failed가 된 20개 unit의 marker/history를
+`control/runtime/work_queue/remediated/n7-prod-start-gate-remediation-20260915T1254Z`에 보존한 뒤
+공식 `retry_failed()`로 모두 pending 복구했다. queue는 다시 `154/0/602`였으며 active lease는
+없었다. `/file3` scratch는 삭제하지 않고, 25% free인 n7 root filesystem의
+`/home/rvi/pixal3d-n7-runtime/local/gpu0`--`gpu5`를 새 scratch로 사용했다.
+
+clean checkout `8754e9c84b2282aebc77908c0a15903ee6925bb5`와 data_toolkit tree
+`c201f1926bda41bfe8e0708c192453a0514dc4c6`로 production image
+`pixal3d-fast:8754e9c-prod`
+(`sha256:4b919f8c45fe08cb593ad8a1c48374adb146cb0dc45cc57ff2ab25892c91ed18`)를 다시 빌드했다. 이전
+`pixal3d-fast:8754e9c`는 실행 코드의 유일한 변경 파일이 Git과 byte-exact였지만 내부 provenance
+marker 두 개만 `5271d8e`로 남아 있어 사용하지 않았다. 새 image는 OCI revision/tree와 내부
+marker, CUDA one-device, RTX 4090, `bpy 4.5.1 LTS`를 모두 통과했다.
+
+GPU 0--5의 fresh isolated OptiX cube와 local/data2/data3 1 GiB checksum I/O를 다시 측정했다.
+hardware/smoke/pilot report는 모두 `passed`이고 이전 evidence는
+`control/recovery/n7-hardware-refresh-20260915T1300Z`에 보존했다. GPU 0 canary가 실제
+`prepare_bundle`에 진입한 뒤 GPU 1--5도 시작했다. 최종 container 이름은
+`youngwoo_diyscene_fast_node7-gpu{0..5}_8754e9c_prod_r2`이며 GPU 하나씩만 노출하고 내부
+`CUDA_VISIBLE_DEVICES=0`, native renderer, max 8 assets, CPU quota `8,8,7,7,7,7`(합계 44),
+RAM 40 GiB, shm 32 GiB를 적용했다. canonical data2/data3은 RW, raw와 Blender tools는 RO이고
+restart policy는 `no`다. 최종 확인 시 6개 container 모두 running/OOM false, queue는
+`completed=154, failed=0, pending=596, running=6, stale=0`이며 batch003/004/006/007/008/012가
+각각 attempt 1, fresh heartbeat, `stage=running`으로 실제 전처리를 진행 중이었다.
