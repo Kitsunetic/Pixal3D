@@ -2803,7 +2803,8 @@ image와 3-renderer policy로 checkpoint부터 자동 재개한다.
 
 22:02--23:22 UTC에 n7의 recovery container는 실행되지 않았고, reservation-aware scheduler는
 30초마다 `candidate=none`을 기록했다. GPU0/1/2/5는 기존 타 사용자 학습 process가 약 20.9 GiB씩
-사용했으며 GPU3/4에서는 별도 사용자의 VAE 평가 process 두 개가 계속 실행됐다. 순간 utilization이
+사용했으며 GPU3/4에서는 n7jh `jaehyeok` container 내부 `rvi`(UID 1013)의 VAE 평가 process
+두 개가 계속 실행됐다. 순간 utilization이
 0%이고 메모리가 1.4--5 GiB 수준으로 내려간 구간도 있었지만 process와 CUDA context가 남아 있어
 free GPU로 간주하지 않았다. 여러 5--15분 read-only watcher에서 총 60회 이상 연속으로 recovery가
 없음을 확인했고, 외부 process/container는 변경하지 않았다.
@@ -2826,9 +2827,15 @@ output comparison·packing·validation 관련 테스트는 `82 passed`였다.
 
 23:53:11--23:53:21 UTC에 n7 host에서 5초 간격으로 세 번 확인한 결과 GPU 0/1/2/5는
 `gs_anigauss`의 네 `run.py config/a3d512_*.yaml` process가 각각 약 20.9 GiB를 사용하며 모든
-표본에서 utilization 100%였다. GPU 3/4는 `jaehyeok` container의 사용자 `inha`가 실행한 두
-`evaluate_vae.py` process가 각각 약 5.1/5.0 GiB를 사용했고, 앞 표본에서 0--4%였다가 마지막
+표본에서 utilization 100%였다. GPU 3/4는 n7jh `jaehyeok` container 내부 사용자
+`rvi`(UID 1013)가 실행한 두 `evaluate_vae.py` process가 각각 약 5.1/5.0 GiB를 사용했고,
+앞 표본에서 0--4%였다가 마지막
 표본에서 둘 다 100%로 상승했다. 따라서 여섯 GPU 모두 점유 상태이며 recovery가 사용할 수 있는
 GPU는 없다. 실행 중인 Pixal3D GPU process는 없고, 남아 있는 Pixal3D container 두 개는
 `sleep infinity`와 관리용 shell만 실행 중이다. 이 점검에서 타 사용자 process/container와
 canonical data는 변경하지 않았다.
+
+후속 UID 감사에서 n7 host의 `/etc/passwd`는 UID 1013을 `inha`로, `jaehyeok` container 내부는
+같은 UID 1013을 `rvi`로 매핑함을 확인했다. `docker top`의 `USER` 열은 host 이름을 표시하므로
+이를 container 내부 사용자 소유권으로 해석하면 안 된다. 위 GPU3/4 process는 별도 `inha`
+사용자의 작업이 아니라 n7jh 자체의 `rvi` 작업이다.
