@@ -339,6 +339,26 @@ def _runtime_encoder_loader_workers(
     return loader_workers
 
 
+def _runtime_native_render_workers(worker_cpu_threads: int) -> int:
+    raw_workers = os.environ.get("PIXAL3D_NATIVE_RENDER_WORKERS")
+    if raw_workers is None:
+        return 1
+    if not raw_workers.isascii() or not raw_workers.isdecimal():
+        raise ValueError(
+            "PIXAL3D_NATIVE_RENDER_WORKERS must be a positive integer"
+        )
+    render_workers = int(raw_workers)
+    if render_workers <= 0:
+        raise ValueError(
+            "PIXAL3D_NATIVE_RENDER_WORKERS must be a positive integer"
+        )
+    if render_workers > worker_cpu_threads - 2:
+        raise ValueError(
+            "PIXAL3D_NATIVE_RENDER_WORKERS must leave two CPU threads for dumps"
+        )
+    return render_workers
+
+
 def _renderer_runtime(source: str, gpu_count: int) -> tuple[str, int]:
     requested_mode = os.environ.get("PIXAL3D_RENDERER_MODE", "external")
     if requested_mode not in {"external", "native"}:
@@ -496,9 +516,14 @@ def build_preprocessing_dag(
     renderer_mode, native_worker_max_assets = _renderer_runtime(
         context.source, runtime_gpu_count
     )
-    render_workers_per_gpu = (
-        1 if renderer_mode == "native" else profile.render_workers_per_gpu
-    )
+    if renderer_mode == "native":
+        render_workers_per_gpu = _runtime_native_render_workers(
+            config.workers.cpu_threads
+        )
+        render_workers = runtime_gpu_count * render_workers_per_gpu
+    else:
+        render_workers_per_gpu = profile.render_workers_per_gpu
+        render_workers = profile.render_workers
     record_args = (
         ("--record_prefix", context.record_prefix)
         if context.record_prefix
@@ -567,7 +592,7 @@ def build_preprocessing_dag(
                 "--dump_workers",
                 str(profile.dump_workers),
                 "--render_workers",
-                str(profile.render_workers),
+                str(render_workers),
                 "--render_workers_per_gpu",
                 str(render_workers_per_gpu),
                 "--gpu_count",

@@ -96,10 +96,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.renderer_mode == "native" and (
         args.gpu_count != 1
         or len(gpu_indices) != 1
-        or args.render_workers_per_gpu != 1
     ):
         parser.error(
-            "native renderer requires exactly one visible GPU and one worker"
+            "native renderer requires exactly one visible GPU"
         )
     requested_render_workers = len(gpu_indices) * args.render_workers_per_gpu
     if min(args.dump_workers, requested_render_workers, args.render_workers) <= 0:

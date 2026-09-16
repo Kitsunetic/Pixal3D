@@ -5,6 +5,7 @@ import sys
 
 import pytest
 
+from data_toolkit import prepare_bundle
 from data_toolkit.geometry_encode_bundle import (
     _gpu_indices as encode_gpu_indices,
 )
@@ -528,6 +529,69 @@ def test_native_renderer_uses_one_long_lived_worker(
     assert geometry.argv[geometry.argv.index("--encoder_ranks") + 1] == "1"
 
 
+def test_native_renderer_runtime_override_uses_two_ranked_workers(
+    config, tmp_path, monkeypatch
+):
+    config = replace(
+        config,
+        workers=replace(config.workers, cpu_threads=14),
+    )
+    config_hash = config.config_hash()
+    monkeypatch.setenv("PIXAL3D_RENDERER_MODE", "native")
+    monkeypatch.setenv("PIXAL3D_NATIVE_RENDER_WORKERS", "2")
+    monkeypatch.setenv("PIXAL3D_GPU_INDICES", "0")
+    context = ShardContext.for_test(
+        tmp_path, "ObjaverseXL_sketchfab", "ObjaverseXL_sketchfab-00000"
+    )
+
+    command = _by_name(build_preprocessing_dag(context, config), "prepare_bundle")
+
+    assert command.argv[command.argv.index("--render_workers") + 1] == "2"
+    assert command.argv[
+        command.argv.index("--render_workers_per_gpu") + 1
+    ] == "2"
+    assert config.config_hash() == config_hash
+
+
+@pytest.mark.parametrize("value", ("", "0", "-1", "+2", "2.0", " 2", "2 "))
+def test_native_renderer_rejects_invalid_runtime_worker_override(
+    value, config, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("PIXAL3D_RENDERER_MODE", "native")
+    monkeypatch.setenv("PIXAL3D_NATIVE_RENDER_WORKERS", value)
+    monkeypatch.setenv("PIXAL3D_GPU_INDICES", "0")
+    context = ShardContext.for_test(
+        tmp_path, "ObjaverseXL_sketchfab", "ObjaverseXL_sketchfab-00000"
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="PIXAL3D_NATIVE_RENDER_WORKERS must be a positive integer",
+    ):
+        build_preprocessing_dag(context, config)
+
+
+def test_native_renderer_rejects_runtime_workers_above_cpu_budget(
+    config, tmp_path, monkeypatch
+):
+    config = replace(
+        config,
+        workers=replace(config.workers, cpu_threads=3),
+    )
+    monkeypatch.setenv("PIXAL3D_RENDERER_MODE", "native")
+    monkeypatch.setenv("PIXAL3D_NATIVE_RENDER_WORKERS", "2")
+    monkeypatch.setenv("PIXAL3D_GPU_INDICES", "0")
+    context = ShardContext.for_test(
+        tmp_path, "ObjaverseXL_sketchfab", "ObjaverseXL_sketchfab-00000"
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="PIXAL3D_NATIVE_RENDER_WORKERS must leave two CPU threads",
+    ):
+        build_preprocessing_dag(context, config)
+
+
 def test_native_renderer_setting_falls_back_for_other_dataset_adapters(
     config, tmp_path, monkeypatch
 ):
@@ -648,6 +712,51 @@ def test_bundle_gpu_indices_reject_nonpositive_count(indices, monkeypatch):
 def test_prepare_bundle_splits_one_cpu_budget_across_concurrent_work():
     assert _worker_budget(44, 21) == (21, 11, 23)
     assert _worker_budget(32, 2) == (2, 15, 30)
+
+
+def test_prepare_bundle_launches_two_ranked_native_renderers(
+    tmp_path, monkeypatch
+):
+    instances = tmp_path / "instances.txt"
+    instances.write_text("a" * 64 + "\n")
+    launches = []
+
+    class Process:
+        def __init__(self, argv, **kwargs):
+            self.args = argv
+            launches.append((argv, kwargs))
+
+    monkeypatch.setattr(prepare_bundle.subprocess, "Popen", Process)
+    monkeypatch.setattr(prepare_bundle, "wait_until", lambda *_: None)
+    monkeypatch.setattr(prepare_bundle, "wait_all", lambda *_: None)
+    monkeypatch.setenv("PIXAL3D_GPU_INDICES", "0")
+
+    assert prepare_bundle.main([
+        "ObjaverseXL", "--source", "sketchfab",
+        "--root", str(tmp_path), "--instances", str(instances),
+        "--download_root", str(tmp_path / "source"),
+        "--work_root", str(tmp_path / "work"),
+        "--output_root", str(tmp_path / "output"),
+        "--num_cond_views", "8", "--cond_resolution", "512",
+        "--boundary_fit_resolution", "128",
+        "--boundary_fit_engine", "BLENDER_EEVEE_NEXT",
+        "--boundary_fit_samples", "1", "--renderer_mode", "native",
+        "--native_worker_max_assets", "8", "--blender_path", "blender",
+        "--cycles_device", "OPTIX", "--dump_workers", "14",
+        "--render_workers", "2", "--render_workers_per_gpu", "2",
+        "--gpu_count", "1",
+    ]) == 0
+
+    render_launches = [
+        argv
+        for argv, _ in launches
+        if any(value.endswith("/render_cond.py") for value in argv)
+    ]
+    assert len(render_launches) == 2
+    assert {
+        (argv[argv.index("--rank") + 1], argv[argv.index("--world_size") + 1])
+        for argv in render_launches
+    } == {("0", "2"), ("1", "2")}
 
 
 def test_unranked_command_expands_once_without_mutation():
