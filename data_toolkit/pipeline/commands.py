@@ -316,6 +316,29 @@ def _runtime_gpu_count(configured_gpu_count: int) -> int:
     return len(indices)
 
 
+def _runtime_encoder_loader_workers(
+    configured_workers: int,
+    worker_cpu_threads: int,
+) -> int:
+    raw_workers = os.environ.get("PIXAL3D_ENCODER_LOADER_WORKERS")
+    if raw_workers is None:
+        return configured_workers
+    if not raw_workers.isascii() or not raw_workers.isdecimal():
+        raise ValueError(
+            "PIXAL3D_ENCODER_LOADER_WORKERS must be a positive integer"
+        )
+    loader_workers = int(raw_workers)
+    if loader_workers <= 0:
+        raise ValueError(
+            "PIXAL3D_ENCODER_LOADER_WORKERS must be a positive integer"
+        )
+    if loader_workers > worker_cpu_threads:
+        raise ValueError(
+            "PIXAL3D_ENCODER_LOADER_WORKERS must not exceed worker CPU threads"
+        )
+    return loader_workers
+
+
 def _renderer_runtime(source: str, gpu_count: int) -> tuple[str, int]:
     requested_mode = os.environ.get("PIXAL3D_RENDERER_MODE", "external")
     if requested_mode not in {"external", "native"}:
@@ -466,6 +489,10 @@ def build_preprocessing_dag(
         )
     dataset = dataset_args(context.source)
     runtime_gpu_count = _runtime_gpu_count(config.parallelism.gpu_count)
+    loader_workers = _runtime_encoder_loader_workers(
+        config.workers.encoder_loader_threads,
+        config.workers.cpu_threads,
+    )
     renderer_mode, native_worker_max_assets = _renderer_runtime(
         context.source, runtime_gpu_count
     )
@@ -589,7 +616,7 @@ def build_preprocessing_dag(
                     "--native_threads",
                     str(profile.voxel_threads_per_worker),
                     "--loader_workers",
-                    str(config.workers.encoder_loader_threads),
+                    str(loader_workers),
                     "--saver_workers",
                     str(config.workers.encoder_saver_threads),
                     "--latent_dtype",

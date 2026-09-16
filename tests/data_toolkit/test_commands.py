@@ -550,6 +550,62 @@ def test_runtime_gpu_allowlist_cannot_exceed_configured_gpu_count(
         build_preprocessing_dag(context, config)
 
 
+def test_geometry_encoder_command_uses_runtime_loader_override_without_changing_config_identity(
+    config, tmp_path, monkeypatch
+):
+    # Given
+    config = replace(
+        config,
+        workers=replace(config.workers, cpu_threads=7),
+    )
+    config_hash = config.config_hash()
+    context = ShardContext.for_test(tmp_path, "ABO", "ABO-00000")
+    monkeypatch.setenv("PIXAL3D_ENCODER_LOADER_WORKERS", "4")
+
+    # When
+    dag = build_preprocessing_dag(context, config)
+
+    # Then
+    command = _by_name(dag, "geometry_encode_bundle")
+    assert command.argv[command.argv.index("--loader_workers") + 1] == "4"
+    assert config.config_hash() == config_hash
+
+
+@pytest.mark.parametrize("value", ("", "0", "-1", "+4", "4.0", " 4", "4 "))
+def test_geometry_encoder_command_rejects_invalid_runtime_loader_override(
+    value, config, tmp_path, monkeypatch
+):
+    # Given
+    context = ShardContext.for_test(tmp_path, "ABO", "ABO-00000")
+    monkeypatch.setenv("PIXAL3D_ENCODER_LOADER_WORKERS", value)
+
+    # When / Then
+    with pytest.raises(
+        ValueError,
+        match="PIXAL3D_ENCODER_LOADER_WORKERS must be a positive integer",
+    ):
+        build_preprocessing_dag(context, config)
+
+
+def test_geometry_encoder_command_rejects_runtime_loader_override_above_effective_cpu_budget(
+    config, tmp_path, monkeypatch
+):
+    # Given
+    config = replace(
+        config,
+        workers=replace(config.workers, cpu_threads=7),
+    )
+    context = ShardContext.for_test(tmp_path, "ABO", "ABO-00000")
+    monkeypatch.setenv("PIXAL3D_ENCODER_LOADER_WORKERS", "8")
+
+    # When / Then
+    with pytest.raises(
+        ValueError,
+        match="PIXAL3D_ENCODER_LOADER_WORKERS must not exceed worker CPU threads",
+    ):
+        build_preprocessing_dag(context, config)
+
+
 def test_render_workers_map_round_robin_to_seven_gpus(config, tmp_path):
     assert render_gpu_indices(config.parallelism.gpu_count) == tuple(range(7))
     assert encode_gpu_indices(config.parallelism.gpu_count) == tuple(range(7))
