@@ -459,7 +459,7 @@ docker build \
 # 이어서 host에서 현재 GPU5 production worker를 실행한다.
 N=5
 NODE_ID="node7-gpu${N}"
-CPU_LIMIT=14
+CPU_LIMIT=16
 
 docker run -d --name "youngwoo_diyscene_fast_${NODE_ID}" \
   --gpus "device=${N}" \
@@ -481,7 +481,7 @@ docker exec "youngwoo_diyscene_fast_${NODE_ID}" bash -lc "
   export PIXAL3D_RENDERER_MODE=native
   export PIXAL3D_NATIVE_WORKER_MAX_ASSETS=8
   export PIXAL3D_NATIVE_RENDER_WORKERS=2
-  export PIXAL3D_ENCODER_LOADER_WORKERS=8
+  export PIXAL3D_ENCODER_LOADER_WORKERS=16
   export PIXAL3D_GPU_INDICES=0
   python -m data_toolkit.pipeline.cli workers --config \"\$CONFIG\" \\
     --action register --node-id \"${NODE_ID}\" --ssh-target n7 \\
@@ -498,8 +498,8 @@ runtime source는 image layer에 들어가며 host source bind를 사용하지 �
 exact commit으로 detached checkout하고 staged/untracked 파일까지 없는지 검사한다. base image도
 registry digest로 고정하며, 어느 검사든 실패하면 `set -e`로 image 생성 전에 중단한다.
 
-이 profile은 GPU5 단독 worker의 14 CPU budget에서 render worker 2개와 encoder loader
-8개를 사용한다. 여러 GPU로 확장할 때는 각 container의 `CPU_LIMIT`을 먼저 배분하고
+이 profile은 GPU5 단독 worker의 16 CPU budget에서 render worker 2개와 encoder loader
+16개를 사용한다. 여러 GPU로 확장할 때는 각 container의 `CPU_LIMIT`을 먼저 배분하고
 `PIXAL3D_ENCODER_LOADER_WORKERS`가 그 limit을 넘지 않게 별도로 정한다. 동일 node-id 또는
 동일 local root를 두 container에 사용하면 worker lock 또는 scratch 충돌이 발생하므로 금지한다.
 상위 data2 mount는 queue/control 및 prepared output 때문에 read-write지만, 그 안의 원본
