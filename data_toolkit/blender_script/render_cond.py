@@ -1,3 +1,5 @@
+# noqa: SIZE_OK — Blender's external script and native bpy worker share this
+# single condition-rendering entrypoint and scene lifecycle.
 import argparse, sys, os, math, re, glob
 from typing import *
 import bpy
@@ -468,8 +470,10 @@ def main(arg):
 
     # ============= Render conditional views =============
     init_render(engine=arg.engine, resolution=arg.cond_resolution)
-    final_cycles_samples = bpy.context.scene.cycles.samples
-    final_cycles_denoising = bpy.context.scene.cycles.use_denoising
+    scene = bpy.context.scene
+    scene.render.use_persistent_data = True
+    final_cycles_samples = scene.cycles.samples
+    final_cycles_denoising = scene.cycles.use_denoising
     # Create a list of views
     to_export = {
         "aabb": [[-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]],
@@ -490,12 +494,13 @@ def main(arg):
     fit_boundary_distance = 130 * fit_resolution / 1024
     final_boundary_distance = 130 * arg.cond_resolution / 1024
     
+    scene.render.resolution_x = fit_resolution
+    scene.render.resolution_y = fit_resolution
+    scene.render.engine = arg.boundary_fit_engine
+    scene.cycles.samples = arg.boundary_fit_samples
+    scene.cycles.use_denoising = False
+    fitted_views = []
     for i, view in enumerate(views):
-        bpy.context.scene.render.resolution_x = fit_resolution
-        bpy.context.scene.render.resolution_y = fit_resolution
-        bpy.context.scene.render.engine = arg.boundary_fit_engine
-        bpy.context.scene.cycles.samples = arg.boundary_fit_samples
-        bpy.context.scene.cycles.use_denoising = False
         current_radius = view['radius']
         retry_count = 0
         cam_dir = np.array([
@@ -503,18 +508,16 @@ def main(arg):
             np.sin(view['yaw']) * np.cos(view['pitch']),
             np.sin(view['pitch'])
         ])
+        lighting_rng_state = np.random.get_state()
         init_random_lighting(cam_dir)
+        output_path = os.path.join(arg.cond_output_folder, f'{i:03d}.png')
+        min_dist = -1
         
         while retry_count < max_retry:
-            cam.location = (
-                current_radius * cam_dir[0],
-                current_radius * cam_dir[1],
-                current_radius * cam_dir[2]
-            )
+            cam.location = tuple(current_radius * cam_dir)
             cam.data.lens = 16 / np.tan(view['fov'] / 2)
             
-            output_path = os.path.join(arg.cond_output_folder, f'{i:03d}.png')
-            bpy.context.scene.render.filepath = output_path
+            scene.render.filepath = output_path
                 
             # Render the scene
             bpy.ops.render.render(write_still=True)
@@ -549,26 +552,52 @@ def main(arg):
         fit_exhausted = retry_count >= max_retry
         if fit_exhausted:
             print(f'[WARNING] View {i}: Max retries reached. Using final radius: {current_radius:.4f} (dist={min_dist}px)')
+        fitted_views.append({
+            "index": i,
+            "view": view,
+            "cam_dir": cam_dir,
+            "lighting_rng_state": lighting_rng_state,
+            "radius": current_radius,
+            "retry_count": retry_count,
+            "fit_exhausted": fit_exhausted,
+            "output_path": output_path,
+            "min_dist": min_dist,
+            "transform_matrix": get_transform_matrix(cam),
+        })
 
-        final_retry_count = retry_count
-        if (
-            fit_resolution != arg.cond_resolution
-            or arg.boundary_fit_engine != arg.engine
-            or arg.boundary_fit_samples != final_cycles_samples
-        ):
-            bpy.context.scene.render.engine = arg.engine
-            bpy.context.scene.cycles.samples = final_cycles_samples
-            bpy.context.scene.cycles.use_denoising = final_cycles_denoising
-            bpy.context.scene.render.resolution_x = arg.cond_resolution
-            bpy.context.scene.render.resolution_y = arg.cond_resolution
-            replay_legacy = target_requires_legacy_replay(fit_exhausted)
+    post_fit_rng_state = np.random.get_state()
+    needs_final_pass = (
+        fit_resolution != arg.cond_resolution
+        or arg.boundary_fit_engine != arg.engine
+        or arg.boundary_fit_samples != final_cycles_samples
+    )
+    if needs_final_pass:
+        scene.render.engine = arg.engine
+        scene.cycles.samples = final_cycles_samples
+        scene.cycles.use_denoising = final_cycles_denoising
+        scene.render.resolution_x = arg.cond_resolution
+        scene.render.resolution_y = arg.cond_resolution
+
+    for fitted_view in fitted_views:
+        i = fitted_view["index"]
+        view = fitted_view["view"]
+        cam_dir = fitted_view["cam_dir"]
+        current_radius = fitted_view["radius"]
+        final_retry_count = fitted_view["retry_count"]
+        output_path = fitted_view["output_path"]
+        min_dist = fitted_view["min_dist"]
+        transform_matrix = fitted_view["transform_matrix"]
+
+        if needs_final_pass:
+            np.random.set_state(fitted_view["lighting_rng_state"])
+            init_random_lighting(cam_dir)
+            cam.data.lens = 16 / np.tan(view['fov'] / 2)
+            replay_legacy = target_requires_legacy_replay(
+                fitted_view["fit_exhausted"]
+            )
             if not replay_legacy:
-                cam.location = (
-                    current_radius * cam_dir[0],
-                    current_radius * cam_dir[1],
-                    current_radius * cam_dir[2]
-                )
-                bpy.context.scene.render.filepath = output_path
+                cam.location = tuple(current_radius * cam_dir)
+                scene.render.filepath = output_path
                 bpy.ops.render.render(write_still=True)
                 bpy.context.view_layer.update()
                 touches_boundary, too_far, min_dist = check_mask_boundary_distance(
@@ -576,7 +605,7 @@ def main(arg):
                     min_boundary_distance=final_boundary_distance,
                 )
                 replay_legacy = target_requires_legacy_replay(
-                    fit_exhausted,
+                    fitted_view["fit_exhausted"],
                     touches_boundary,
                     too_far,
                 )
@@ -589,12 +618,8 @@ def main(arg):
                 )
                 fallback_retries = 0
                 while fallback_retries < fallback_retry_limit:
-                    cam.location = (
-                        current_radius * cam_dir[0],
-                        current_radius * cam_dir[1],
-                        current_radius * cam_dir[2]
-                    )
-                    bpy.context.scene.render.filepath = output_path
+                    cam.location = tuple(current_radius * cam_dir)
+                    scene.render.filepath = output_path
                     bpy.ops.render.render(write_still=True)
                     bpy.context.view_layer.update()
                     touches_boundary, too_far, min_dist = check_mask_boundary_distance(
@@ -611,17 +636,20 @@ def main(arg):
                     )
                 if fallback_retries >= fallback_retry_limit:
                     print(f'[WARNING] View {i}: Final-resolution fallback exhausted (dist={min_dist}px)')
-            
+            transform_matrix = get_transform_matrix(cam)
+
         # Save camera parameters (with potentially updated radius)
         metadata = {
             "file_path": f'{i:03d}.png',
             "camera_angle_x": view['fov'],
-            "transform_matrix": get_transform_matrix(cam),
+            "transform_matrix": transform_matrix,
             "radius": current_radius,  # Save the actual radius used
             "original_radius": view['radius'],  # Save original for reference
             "retries": final_retry_count
         }
         to_export["frames"].append(metadata)
+
+    np.random.set_state(post_fit_rng_state)
     
     # Save the camera parameters
     with open(os.path.join(arg.cond_output_folder, 'transforms.json'), 'w') as f:

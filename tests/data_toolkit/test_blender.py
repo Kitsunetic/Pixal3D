@@ -949,11 +949,11 @@ def test_blender_script_selects_gpu_and_scales_boundary():
     assert "130 * arg.cond_resolution / 1024" in source
     assert 'parser.add_argument("--cycles_device"' in source
     assert "fit_resolution = min(arg.boundary_fit_resolution" in source
-    assert "bpy.context.scene.render.engine = arg.boundary_fit_engine" in source
+    assert "scene.render.engine = arg.boundary_fit_engine" in source
     assert "arg.boundary_fit_engine != arg.engine" in source
     assert "arg.boundary_fit_samples != final_cycles_samples" in source
-    assert "bpy.context.scene.cycles.samples = arg.boundary_fit_samples" in source
-    assert "bpy.context.scene.cycles.samples = final_cycles_samples" in source
+    assert "scene.cycles.samples = arg.boundary_fit_samples" in source
+    assert "scene.cycles.samples = final_cycles_samples" in source
     assert "final_boundary_distance" in source
     assert 'parser.add_argument("--boundary_fit_resolution"' in source
 
