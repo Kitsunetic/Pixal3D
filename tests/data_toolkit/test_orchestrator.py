@@ -195,7 +195,7 @@ def test_overlap32_scheduler_overlaps_dump_with_encode(
         "prepare_bundle",
     )
     assert scheduler.executor.stage_commands["render"] == ("render_bundle",)
-    assert stages["prepare"].cpu_cores == 18
+    assert stages["prepare"].cpu_cores == 4
     assert stages["render"].cpu_cores == 8
     assert stages["encode"].cpu_cores == 18
     assert scheduler.broker is None

@@ -53,7 +53,7 @@ def test_overlap32_profile_splits_prepare_bundle_without_changing_identity(
     assert commands["prepare_bundle"].argv[-2:] == ("--phase", "dump")
     assert commands["render_bundle"].argv[-2:] == ("--phase", "render")
     dump_argv = commands["prepare_bundle"].argv
-    assert dump_argv[dump_argv.index("--dump_workers") + 1] == "18"
+    assert dump_argv[dump_argv.index("--dump_workers") + 1] == "4"
     encode_argv = commands["geometry_encode_bundle"].argv
     assert encode_argv[encode_argv.index("--max_workers") + 1] == "18"
     assert config.config_hash() == config_hash
@@ -70,10 +70,10 @@ def test_overlap32_profile_keeps_fixed_worker_counts_without_cpu_admission(
     )
 
     assert runtime.chunk_assets == 32
-    assert runtime.prepare_cpu_cores == 18
+    assert runtime.prepare_cpu_cores == 4
     assert runtime.render_cpu_cores == 8
     assert runtime.encode_cpu_cores == 18
     assert runtime.geometry_workers == 18
-    assert runtime.prepare_cpu_cores + runtime.encode_cpu_cores == 36
-    assert 2 * runtime.prepare_cpu_cores == 36
+    assert runtime.prepare_cpu_cores + runtime.encode_cpu_cores == 22
+    assert 3 * runtime.prepare_cpu_cores == 12
     assert runtime.split_prepare_bundle is True

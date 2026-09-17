@@ -38,7 +38,7 @@ def parallel_pipeline_runtime(
         )
     return ParallelPipelineRuntime(
         chunk_assets=32,
-        prepare_cpu_cores=18,
+        prepare_cpu_cores=4,
         render_cpu_cores=8,
         encode_cpu_cores=18,
         geometry_workers=18,
