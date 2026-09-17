@@ -402,6 +402,26 @@ class IntegrationProviderRequired(InfrastructureError):
     pass
 
 
+def _local_scratch_reserve_bytes(total_bytes: int) -> int:
+    raw_percent = os.environ.get(
+        "PIXAL3D_LOCAL_SCRATCH_RESERVE_PERCENT", "15"
+    )
+    try:
+        reserve_percent = int(raw_percent)
+    except ValueError as error:
+        raise InfrastructureError(
+            "PIXAL3D_LOCAL_SCRATCH_RESERVE_PERCENT must be an integer"
+        ) from error
+    if not 1 <= reserve_percent <= 100:
+        raise InfrastructureError(
+            "PIXAL3D_LOCAL_SCRATCH_RESERVE_PERCENT must be between 1 and 100"
+        )
+    return max(
+        (total_bytes * reserve_percent + 99) // 100,
+        120 * 1024**3,
+    )
+
+
 class EscalationCategory(str, Enum):
     INFRASTRUCTURE = "infrastructure"
     RESOURCE = "resource"
@@ -3452,7 +3472,7 @@ class PipelineServices:
             or free > total
         ):
             raise InfrastructureError("invalid local filesystem usage")
-        reserve = max((total * 15 + 99) // 100, 120 * 1024**3)
+        reserve = _local_scratch_reserve_bytes(total)
         usable = max(0, free - reserve)
         per_chunk_budget = usable // self.config.parallelism.max_chunks_in_flight
         chunk_assets = choose_chunk_assets(
@@ -4298,7 +4318,7 @@ class PipelineServices:
             or free > total
         ):
             raise InfrastructureError("invalid local filesystem usage")
-        reserve = max((total * 15 + 99) // 100, 120 * 1024**3)
+        reserve = _local_scratch_reserve_bytes(total)
         usable = max(0, free - reserve)
         cap = {
             "smoke": self.config.batching.smoke_max_assets,

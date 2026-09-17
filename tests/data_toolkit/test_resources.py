@@ -272,6 +272,22 @@ def test_local_absolute_floor_stops(config):
     assert decision.action == ResourceAction.STOP
 
 
+def test_local_percentage_floor_uses_runtime_override(config, monkeypatch):
+    # Given: file3 is below the canonical 15% floor but above a 10% override.
+    monkeypatch.setenv("PIXAL3D_LOCAL_SCRATCH_RESERVE_PERCENT", "10")
+    snapshot = sample(
+        datetime.now(timezone.utc),
+        local_free_gib=15_000.0,
+        local_free_percent=14.0,
+    )
+
+    # When: the production resource policy evaluates the filesystem.
+    decision = ResourcePolicy(config.limits).evaluate(snapshot)
+
+    # Then: the runtime override admits work on the existing file3 volume.
+    assert decision.action == ResourceAction.RUN
+
+
 def test_nfs_free_space_floors_stop(config):
     now = datetime.now(timezone.utc)
     assert (

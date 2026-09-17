@@ -458,6 +458,22 @@ class ResourcePolicy:
         monotonic_clock: Callable[[], float] = time.monotonic,
     ):
         self.limits = limits
+        raw_local_free_percent = os.environ.get(
+            "PIXAL3D_LOCAL_SCRATCH_RESERVE_PERCENT"
+        )
+        if raw_local_free_percent is None:
+            self.local_free_percent = limits.local_free_percent
+        else:
+            try:
+                self.local_free_percent = int(raw_local_free_percent)
+            except ValueError as error:
+                raise ValueError(
+                    "PIXAL3D_LOCAL_SCRATCH_RESERVE_PERCENT must be an integer"
+                ) from error
+            if not 1 <= self.local_free_percent <= 100:
+                raise ValueError(
+                    "PIXAL3D_LOCAL_SCRATCH_RESERVE_PERCENT must be between 1 and 100"
+                )
         self.monotonic_clock = monotonic_clock
         self.first_seen: dict[str, float] = {}
         self.swap_window: deque[tuple[float, int]] = deque()
@@ -484,7 +500,7 @@ class ResourcePolicy:
         swap_threshold = self.limits.swap_soft_mib_per_minute * 1024**2
         if (
             value.local_free_gib < self.limits.local_free_gib
-            or value.local_free_percent < self.limits.local_free_percent
+            or value.local_free_percent < self.local_free_percent
         ):
             hard.append("local free-space floor")
         if value.data2_project_tib >= self.limits.data2_hard_tib:

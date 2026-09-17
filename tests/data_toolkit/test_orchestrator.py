@@ -376,6 +376,18 @@ def test_work_batches_fit_reserved_local_budget():
     assert all(len(batch) <= 2 for batch in batches)
 
 
+def test_local_scratch_reserve_uses_runtime_percentage_override(monkeypatch):
+    # Given: file3 has a large total capacity and an explicit 10% reserve.
+    total_bytes = 2000 * 1024**3
+    monkeypatch.setenv("PIXAL3D_LOCAL_SCRATCH_RESERVE_PERCENT", "10")
+
+    # When: the local scratch reserve is calculated.
+    reserve_bytes = orchestrator_module._local_scratch_reserve_bytes(total_bytes)
+
+    # Then: the runtime percentage replaces the conservative 15% default.
+    assert reserve_bytes == 200 * 1024**3
+
+
 def test_work_batches_reject_capacity_that_cannot_fit_one_asset():
     with pytest.raises(ValueError, match="cannot fit one"):
         plan_work_batches(
