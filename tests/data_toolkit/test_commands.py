@@ -759,6 +759,89 @@ def test_prepare_bundle_launches_two_ranked_native_renderers(
     } == {("0", "2"), ("1", "2")}
 
 
+def test_prepare_bundle_dump_phase_does_not_launch_renderers(
+    tmp_path, monkeypatch
+):
+    instances = tmp_path / "instances.txt"
+    instances.write_text("a" * 64 + "\n")
+    launches = []
+
+    class Process:
+        def __init__(self, argv, **kwargs):
+            self.args = argv
+            launches.append((argv, kwargs))
+
+    monkeypatch.setattr(prepare_bundle.subprocess, "Popen", Process)
+    monkeypatch.setattr(prepare_bundle, "wait_until", lambda *_: None)
+    monkeypatch.setattr(prepare_bundle, "wait_all", lambda *_: None)
+
+    assert prepare_bundle.main([
+        "ObjaverseXL", "--source", "sketchfab",
+        "--root", str(tmp_path), "--instances", str(instances),
+        "--download_root", str(tmp_path / "source"),
+        "--work_root", str(tmp_path / "work"),
+        "--output_root", str(tmp_path / "output"),
+        "--num_cond_views", "8", "--cond_resolution", "512",
+        "--boundary_fit_resolution", "128",
+        "--boundary_fit_engine", "BLENDER_EEVEE_NEXT",
+        "--boundary_fit_samples", "1", "--renderer_mode", "native",
+        "--native_worker_max_assets", "8", "--blender_path", "blender",
+        "--cycles_device", "OPTIX", "--dump_workers", "28",
+        "--render_workers", "2", "--render_workers_per_gpu", "2",
+        "--gpu_count", "1", "--phase", "dump",
+    ]) == 0
+
+    launched_scripts = [
+        next(value for value in argv if value.endswith(".py"))
+        for argv, _ in launches
+    ]
+    assert any(value.endswith("dump_mesh.py") for value in launched_scripts)
+    assert any(value.endswith("dump_pbr.py") for value in launched_scripts)
+    assert any(value.endswith("asset_stats.py") for value in launched_scripts)
+    assert not any(value.endswith("render_cond.py") for value in launched_scripts)
+
+
+def test_prepare_bundle_render_phase_does_not_launch_dumpers(
+    tmp_path, monkeypatch
+):
+    instances = tmp_path / "instances.txt"
+    instances.write_text("a" * 64 + "\n")
+    launches = []
+
+    class Process:
+        def __init__(self, argv, **kwargs):
+            self.args = argv
+            launches.append((argv, kwargs))
+
+    monkeypatch.setattr(prepare_bundle.subprocess, "Popen", Process)
+    monkeypatch.setattr(prepare_bundle, "wait_until", lambda *_: None)
+    monkeypatch.setattr(prepare_bundle, "wait_all", lambda *_: None)
+    monkeypatch.setenv("PIXAL3D_GPU_INDICES", "0")
+
+    assert prepare_bundle.main([
+        "ObjaverseXL", "--source", "sketchfab",
+        "--root", str(tmp_path), "--instances", str(instances),
+        "--download_root", str(tmp_path / "source"),
+        "--work_root", str(tmp_path / "work"),
+        "--output_root", str(tmp_path / "output"),
+        "--num_cond_views", "8", "--cond_resolution", "512",
+        "--boundary_fit_resolution", "128",
+        "--boundary_fit_engine", "BLENDER_EEVEE_NEXT",
+        "--boundary_fit_samples", "1", "--renderer_mode", "native",
+        "--native_worker_max_assets", "8", "--blender_path", "blender",
+        "--cycles_device", "OPTIX", "--dump_workers", "28",
+        "--render_workers", "2", "--render_workers_per_gpu", "2",
+        "--gpu_count", "1", "--phase", "render",
+    ]) == 0
+
+    launched_scripts = [
+        next(value for value in argv if value.endswith(".py"))
+        for argv, _ in launches
+    ]
+    assert len(launched_scripts) == 2
+    assert all(value.endswith("render_cond.py") for value in launched_scripts)
+
+
 def test_unranked_command_expands_once_without_mutation():
     command = CommandSpec("cpu", ("python", "script.py"), CPU_ENV)
 

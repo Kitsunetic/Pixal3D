@@ -15,7 +15,7 @@ import time
 from typing import Callable, Mapping, Protocol, Sequence
 
 from .commands import ShardContext
-from .parallelism import DynamicResourceBroker, NodeResourceBroker
+from .parallelism import DynamicResourceBroker
 
 
 CHUNK_CHECKPOINT_SCHEMA_VERSION = 1
@@ -161,10 +161,16 @@ class ChunkStageExecutor(Protocol):
     def execute(
         self, chunk: ChunkContext, stage: StageSpec
     ) -> Mapping[str, float] | None:
-        """Run one admitted stage and return optional numeric observations."""
+        """Run one ready stage and return optional numeric observations."""
 
     def validate(self, chunk: ChunkContext, stage: StageSpec) -> bool:
         """Validate a completed stage before it is skipped on restart."""
+
+
+class DynamicLease(Protocol):
+    node_id: str
+
+    def release(self) -> None: ...
 
 
 class ChunkExecutionError(RuntimeError):
@@ -260,6 +266,27 @@ def choose_chunk_assets(
     return configured if required <= usable_bytes else 32
 
 
+def resolve_frozen_chunk_assets(
+    checkpoint_root: Path, *, requested: int
+) -> int:
+    """Keep a previously frozen batch resumable across runtime tuning."""
+    if type(requested) is not int or requested <= 0:
+        raise ValueError("requested chunk assets must be a positive integer")
+    manifest_path = Path(checkpoint_root) / "manifest.json"
+    if not manifest_path.exists():
+        return requested
+    try:
+        manifest = json.loads(manifest_path.read_bytes())
+        frozen = manifest["chunk_assets"]
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError) as error:
+        raise ChunkIdentityError(
+            f"invalid chunk identity manifest: {error}"
+        ) from error
+    if type(frozen) is not int or frozen <= 0:
+        raise ChunkIdentityError("invalid frozen chunk asset count")
+    return frozen
+
+
 def _tree_digest(root: Path) -> str:
     digest = sha256()
     for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
@@ -340,7 +367,7 @@ class ParallelChunkScheduler:
         self,
         *,
         config_hash: str,
-        broker: NodeResourceBroker,
+        broker: DynamicResourceBroker | None = None,
         executor: ChunkStageExecutor,
         stages: Sequence[StageSpec],
         checkpoint_root: Path,
@@ -578,7 +605,10 @@ class ParallelChunkScheduler:
         active: set[str] = set()
         failed: set[str] = set()
         queued_index = 0
-        running: dict[Future, tuple[ChunkContext, StageSpec, object, float]] = {}
+        running: dict[
+            Future,
+            tuple[ChunkContext, StageSpec, DynamicLease | None, float],
+        ] = {}
         intervals: dict[tuple[str, str], tuple[float, float]] = {}
         errors: list[tuple[str, str, BaseException]] = []
         observed_max = 0
@@ -602,7 +632,7 @@ class ParallelChunkScheduler:
                 observed_max = min(observed_max, self.max_chunks_in_flight)
 
                 running_chunks = {item[0].chunk_id for item in running.values()}
-                admitted = False
+                submitted = False
                 for chunk_id in sorted(active):
                     if chunk_id in running_chunks:
                         continue
@@ -619,53 +649,54 @@ class ParallelChunkScheduler:
                     )
                     if stage is None:
                         continue
-                    if isinstance(self.broker, DynamicResourceBroker):
+                    lease = None
+                    if self.broker is not None:
                         lease = self.broker.acquire_any(
                             cpu_cores=stage.cpu_cores,
                             gpu_count=len(stage.gpu_indices),
                             gpu_memory_percent=stage.gpu_memory_percent,
                         )
-                    else:
-                        lease = self.broker.try_acquire(
-                            cpu_cores=stage.cpu_cores,
-                            gpu_indices=stage.gpu_indices,
-                            gpu_memory_percent=stage.gpu_memory_percent,
-                        )
-                    if lease is None:
-                        continue
+                        if lease is None:
+                            continue
                     chunk = by_id[chunk_id]
                     start = self.monotonic_clock()
-                    execute_with_lease = getattr(
-                        self.executor, "execute_with_lease", None
-                    )
-                    if callable(execute_with_lease):
-                        future = pool.submit(
-                            execute_with_lease, chunk, stage, lease
+                    if lease is not None:
+                        execute_with_lease = getattr(
+                            self.executor, "execute_with_lease", None
                         )
+                        if callable(execute_with_lease):
+                            future = pool.submit(
+                                execute_with_lease, chunk, stage, lease
+                            )
+                        else:
+                            future = pool.submit(
+                                self.executor.execute, chunk, stage
+                            )
                     else:
                         future = pool.submit(self.executor.execute, chunk, stage)
                     running[future] = (chunk, stage, lease, start)
-                    admitted = True
+                    submitted = True
 
                 unfinished = any(not terminal(chunk.chunk_id) and chunk.chunk_id not in failed for chunk in chunks)
                 if not running:
                     if not unfinished:
                         break
-                    if not admitted:
+                    if not submitted:
                         pending = next(
                             chunk.chunk_id
                             for chunk in chunks
                             if not terminal(chunk.chunk_id) and chunk.chunk_id not in failed
                         )
                         raise ChunkExecutionError(
-                            f"resource admission deadlock for chunk: {pending}"
+                            f"scheduler deadlock for chunk: {pending}"
                         )
 
                 completed_futures, _ = wait(tuple(running), return_when=FIRST_COMPLETED)
                 for future in completed_futures:
                     chunk, stage, lease, start = running.pop(future)
                     finish = self.monotonic_clock()
-                    lease.release()
+                    if lease is not None:
+                        lease.release()
                     intervals[(chunk.chunk_id, stage.name)] = (start, finish)
                     try:
                         observations = future.result()
@@ -700,7 +731,7 @@ class ParallelChunkScheduler:
                         checkpoints[chunk.chunk_id].complete(stage.name)
                         self._save_checkpoint(chunk, checkpoints[chunk.chunk_id])
                     except BaseException as error:
-                        if isinstance(self.broker, DynamicResourceBroker):
+                        if self.broker is not None and lease is not None:
                             self.broker.cordon(lease.node_id)
                             # The checkpoint was not advanced: another active
                             # worker can resume this exact stage safely.

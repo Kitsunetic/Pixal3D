@@ -43,8 +43,7 @@ from .reporting import (
 )
 from .resources import (
     ProjectStorageAccounting,
-    ResourceGuard,
-    ResourcePolicy,
+    ResourceMonitor,
     ResourceSampler,
     _directory_size,
 )
@@ -1691,7 +1690,7 @@ class NoFollowTelemetryWriter:
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
         self._last_sync = self._clock()
 
-    def write(self, snapshot, decision, shard_id, command) -> None:
+    def write(self, snapshot, shard_id, command) -> None:
         if self._closed:
             raise ValueError("telemetry writer is closed")
         payload = asdict(snapshot)
@@ -1703,8 +1702,8 @@ class NoFollowTelemetryWriter:
         payload.update(
             shard_id=shard_id,
             command=command,
-            action=decision.action.value,
-            reasons=decision.reasons,
+            action="run",
+            reasons=(),
         )
         encoded = (
             json.dumps(payload, sort_keys=True) + "\n"
@@ -2900,19 +2899,16 @@ class MutatingRuntime:
         )
         self._telemetry = telemetry
         try:
-            guard = ResourceGuard(
+            monitor = ResourceMonitor(
                 sampler,
-                ResourcePolicy(self.config.limits),
                 telemetry,
-                time.monotonic,
-                time.sleep,
             )
             registry = SafeRegistryStore(
                 self.config.paths.data2_root / "control/assets.parquet", self.config
             )
             self._services = PipelineServices(
                 self.config,
-                resource_guard=guard,
+                resource_monitor=monitor,
                 pilot_reader=PilotArtifactReader(self.config),
                 reference_counter=FrozenReferenceCounter(self.config),
                 project_accounting=accounting,

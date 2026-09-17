@@ -50,33 +50,20 @@ from data_toolkit.pipeline.packing import (
     verify_pack,
 )
 from data_toolkit.pipeline.resources import (
-    ResourceAction,
     ResourceAccountingError,
-    ResourceDecision,
-    ResourceLimitExceeded,
 )
 from data_toolkit.pipeline.validation import ValidationError
 
 
-class FakeResourceGuard:
-    def __init__(self, decisions=()):
-        self.reason = None
-        self.decisions = deque(decisions)
+class FakeResourceMonitor:
+    def __init__(self, outcomes=()):
+        self.outcomes = deque(outcomes)
 
-    def stop_next(self, reason):
-        self.reason = reason
-
-    def wait_for_admission(self, shard_id, command):
-        if self.reason:
-            raise ResourceLimitExceeded((self.reason,))
-
-    def check(self, shard_id, command):
-        if self.decisions:
-            decision = self.decisions.popleft()
-            if isinstance(decision, BaseException):
-                raise decision
-            return decision
-        return ResourceDecision(ResourceAction.RUN, ())
+    def record(self, shard_id, command):
+        if self.outcomes:
+            outcome = self.outcomes.popleft()
+            if isinstance(outcome, BaseException):
+                raise outcome
 
     def last_five_minutes(self):
         return ({"cpu_percent": 95.0},)
@@ -88,7 +75,7 @@ class RecordingRunner(PipelineRunner):
         handlers = {}
         super().__init__(
             config,
-            FakeResourceGuard(),
+            FakeResourceMonitor(),
             validators,
             handlers,
             command_builder=(lambda context, config: commands)
@@ -180,6 +167,85 @@ def test_production_batches_above_64_use_parallel_chunk_scheduler(
     assert scheduler.calls == [("batch000", assets)]
     assert runner.calls == [("run", "batch000")]
     assert runner.command_builder == "original"
+
+
+def test_overlap32_scheduler_overlaps_dump_with_encode(
+    isolated_config, shard_context, monkeypatch
+):
+    monkeypatch.setenv("PIXAL3D_PIPELINE_PROFILE", "overlap32")
+    pilot = SimpleNamespace(
+        p95_peak_local_bytes=lambda _source: 100 * 1024**2,
+    )
+    disk = SimpleNamespace(
+        total=100 * 1024**4,
+        free=50 * 1024**4,
+    )
+    services = PipelineServices(
+        isolated_config,
+        pilot_reader=pilot,
+        disk_usage=lambda _path: disk,
+    )
+
+    scheduler = services._build_parallel_scheduler(shard_context)
+    stages = {stage.name: stage for stage in scheduler.stages}
+
+    assert scheduler.chunk_assets == 32
+    assert scheduler.executor.stage_commands["prepare"] == (
+        "stage_raw",
+        "prepare_bundle",
+    )
+    assert scheduler.executor.stage_commands["render"] == ("render_bundle",)
+    assert stages["prepare"].cpu_cores == 18
+    assert stages["render"].cpu_cores == 8
+    assert stages["encode"].cpu_cores == 18
+    assert scheduler.broker is None
+    assert scheduler.max_chunks_in_flight == 3
+
+
+def test_overlap32_accepts_legacy_prepare_bundle_as_completed_render(
+    isolated_config, shard_context, monkeypatch
+):
+    monkeypatch.setenv("PIXAL3D_PIPELINE_PROFILE", "overlap32")
+    write_instances(shard_context, ("a" * 64,))
+    runner = RecordingRunner(isolated_config)
+    runner.checkpoint.complete("prepare_bundle")
+    runner._restore_quality_state = lambda _context, _checkpoint: None
+    runner.validators["render_bundle"] = lambda: True
+
+    assert runner.validate_completed_commands(
+        shard_context, ("render_bundle",)
+    ) is True
+
+
+def test_completed_bundle_validation_does_not_require_cleaned_voxels(
+    isolated_config, shard_context
+):
+    runner = RecordingRunner(isolated_config)
+    runner.active_context = shard_context
+    runner.active_checkpoint = runner.checkpoint
+    for resolution in isolated_config.targets.resolutions:
+        runner.checkpoint.complete(f"cleanup_voxels_{resolution}")
+    services = PipelineServices(isolated_config, runner=runner)
+    validated_commands = []
+    services._validate_stage_assets = (
+        lambda _context, _validator, command_name=None: (
+            validated_commands.append(command_name)
+        )
+    )
+
+    assert services._validate_command("geometry_encode_bundle") is True
+    assert not any(
+        name is not None
+        and (
+            name.startswith("dual_grid_")
+            or name.startswith("voxelize_pbr_")
+        )
+        for name in validated_commands
+    )
+    assert any(
+        name is not None and name.startswith("encode_shape_")
+        for name in validated_commands
+    )
 
 
 def test_parallel_raw_metadata_omits_quarantined_download_assets(
@@ -663,32 +729,6 @@ def test_command_execution_does_not_hide_programmer_defects(
     assert caught.value is defect
 
 
-def test_hard_resource_stop_checkpoints_and_escalates(
-    isolated_config, shard_context
-):
-    reports = []
-    fake_runner = RecordingRunner(isolated_config, reports=reports)
-    fake_runner.resource_guard.stop_next("CPU hard duration")
-    with pytest.raises(PipelineStopped) as caught:
-        fake_runner.run_shard(shard_context)
-    assert caught.value.exit_code == 3
-    assert caught.value.report.category == EscalationCategory.RESOURCE
-    assert caught.value.report.reason == "CPU hard duration"
-    assert caught.value.report.shard_id == shard_context.shard_id
-    assert caught.value.report.recent_telemetry
-    assert caught.value.report.completed_counts == {
-        "commands": 0,
-        "outcomes": 0,
-        "completed_assets": 0,
-        "quarantined_assets": 0,
-        "failure_assets": 0,
-        "schema_failure_assets": 0,
-    }
-    assert caught.value.report.safe_resume_command
-    assert caught.value.report.recovery_choices
-    assert fake_runner.checkpoint.was_saved
-    assert reports == [caught.value.report]
-
 
 def test_recoverable_command_gets_at_most_three_total_attempts(
     isolated_config, shard_context
@@ -833,7 +873,7 @@ def test_os_infrastructure_error_escalates_without_retry(
 def test_checkpoint_roundtrip_is_atomic_and_validates_identity(
     isolated_config, tmp_path
 ):
-    runner = PipelineRunner(isolated_config, FakeResourceGuard(), {}, {})
+    runner = PipelineRunner(isolated_config, FakeResourceMonitor(), {}, {})
     path = tmp_path / "nested" / "checkpoint.json"
     checkpoint = PipelineCheckpoint("ABO-00000")
     checkpoint.complete("dump_mesh")
@@ -850,7 +890,7 @@ def test_checkpoint_roundtrip_is_atomic_and_validates_identity(
 def test_post_budget_completed_repair_checkpoint_roundtrips(
     isolated_config, tmp_path
 ):
-    runner = PipelineRunner(isolated_config, FakeResourceGuard(), {}, {})
+    runner = PipelineRunner(isolated_config, FakeResourceMonitor(), {}, {})
     path = tmp_path / "checkpoint.json"
     checkpoint = PipelineCheckpoint("ABO-00000")
     checkpoint.complete("prepare_bundle")
@@ -866,7 +906,7 @@ def test_post_budget_completed_repair_checkpoint_roundtrips(
 def test_post_budget_attempt_requires_completed_command(
     isolated_config, tmp_path
 ):
-    runner = PipelineRunner(isolated_config, FakeResourceGuard(), {}, {})
+    runner = PipelineRunner(isolated_config, FakeResourceMonitor(), {}, {})
     path = tmp_path / "checkpoint.json"
     checkpoint = PipelineCheckpoint("ABO-00000")
     checkpoint.attempts["prepare_bundle"] = (
@@ -913,7 +953,7 @@ def test_corrupt_checkpoint_fails_closed(
 ):
     path = tmp_path / "checkpoint.json"
     path.write_text(payload)
-    runner = PipelineRunner(isolated_config, FakeResourceGuard(), {}, {})
+    runner = PipelineRunner(isolated_config, FakeResourceMonitor(), {}, {})
 
     with pytest.raises(CheckpointError):
         runner.load_checkpoint(path, "ABO-00000")
@@ -925,7 +965,7 @@ def test_checkpoint_parser_does_not_hide_programmer_defects(
 ):
     path = tmp_path / "checkpoint.json"
     path.write_text("{}")
-    runner = PipelineRunner(isolated_config, FakeResourceGuard(), {}, {})
+    runner = PipelineRunner(isolated_config, FakeResourceMonitor(), {}, {})
     defect = error_type("checkpoint parser programmer defect")
     monkeypatch.setattr(
         orchestrator_module.json,
@@ -953,7 +993,7 @@ def test_checkpoint_symlink_fails_closed(isolated_config, tmp_path):
     )
     path = tmp_path / "checkpoint.json"
     path.symlink_to(outside)
-    runner = PipelineRunner(isolated_config, FakeResourceGuard(), {}, {})
+    runner = PipelineRunner(isolated_config, FakeResourceMonitor(), {}, {})
 
     with pytest.raises(CheckpointError, match="regular file"):
         runner.load_checkpoint(path, "ABO-00000")
@@ -962,7 +1002,7 @@ def test_checkpoint_symlink_fails_closed(isolated_config, tmp_path):
 def test_unknown_internal_command_fails_closed(isolated_config):
     runner = PipelineRunner(
         isolated_config,
-        FakeResourceGuard(),
+        FakeResourceMonitor(),
         {},
         defaultdict(lambda: lambda: None),
     )
@@ -978,7 +1018,7 @@ def test_completed_command_with_missing_validator_escalates(
     reports = []
     runner = PipelineRunner(
         isolated_config,
-        FakeResourceGuard(),
+        FakeResourceMonitor(),
         {},
         {},
         command_builder=lambda context, config: (command,),
@@ -1002,7 +1042,7 @@ def test_internal_dispatch_is_keyed_by_exact_command_name(isolated_config):
     calls = []
     runner = PipelineRunner(
         isolated_config,
-        FakeResourceGuard(),
+        FakeResourceMonitor(),
         {},
         {"stage_raw": lambda: calls.append("stage_raw")},
     )
@@ -1015,7 +1055,7 @@ def test_internal_dispatch_is_keyed_by_exact_command_name(isolated_config):
 def test_known_internal_name_cannot_dispatch_external_argv(isolated_config):
     runner = PipelineRunner(
         isolated_config,
-        FakeResourceGuard(),
+        FakeResourceMonitor(),
         {},
         {"stage_raw": lambda: None},
     )
@@ -1175,7 +1215,7 @@ def process_runner(config, guard, processes, *, group_ids=None):
 def test_external_ranks_are_reaped_after_normal_completion(isolated_config):
     processes = [FakeProcess(101, [None, 0]), FakeProcess(102, [None, 0])]
     runner, created, signals = process_runner(
-        isolated_config, FakeResourceGuard(), processes
+        isolated_config, FakeResourceMonitor(), processes
     )
     command = CommandSpec("encode", ("worker",), gpu_ranks=2)
 
@@ -1196,7 +1236,7 @@ def test_short_leaf_completion_is_polled_without_five_second_tail_latency(
 ):
     process = FakeProcess(103, [None, 0])
     runner, _, _ = process_runner(
-        isolated_config, FakeResourceGuard(), [process]
+        isolated_config, FakeResourceMonitor(), [process]
     )
 
     runner.execute(CommandSpec("worker", ("worker",)), "ABO-00000")
@@ -1207,7 +1247,7 @@ def test_short_leaf_completion_is_polled_without_five_second_tail_latency(
 def test_failed_rank_terminates_and_reaps_its_siblings(isolated_config):
     processes = [FakeProcess(201, [7]), FakeProcess(202, [None, None, None])]
     runner, _, signals = process_runner(
-        isolated_config, FakeResourceGuard(), processes
+        isolated_config, FakeResourceMonitor(), processes
     )
 
     with pytest.raises(subprocess.CalledProcessError):
@@ -1225,7 +1265,7 @@ def test_failed_blender_worker_terminates_and_reaps_all_fourteen_workers(
         FakeProcess(221 + index, [None, None, None]) for index in range(13)
     ]
     runner, created, signals = process_runner(
-        isolated_config, FakeResourceGuard(), processes
+        isolated_config, FakeResourceMonitor(), processes
     )
     command = CommandSpec(
         "render_cond",
@@ -1244,56 +1284,37 @@ def test_failed_blender_worker_terminates_and_reaps_all_fourteen_workers(
     )
 
 
-def test_paused_groups_resume_before_term_and_all_are_reaped(isolated_config):
-    pause = ResourceDecision(ResourceAction.PAUSE, ("CPU soft",))
-    stop = ResourceDecision(ResourceAction.STOP, ("CPU hard",))
-    processes = [FakeProcess(301, [None] * 10), FakeProcess(302, [None] * 10)]
-    runner, _, signals = process_runner(
-        isolated_config, FakeResourceGuard((pause, stop)), processes
-    )
 
-    with pytest.raises(ResourceLimitExceeded):
-        runner.execute(CommandSpec("encode", ("worker",), gpu_ranks=2), "shard")
-
-    for pid in (301, 302):
-        assert signals.index((pid, signal.SIGSTOP)) < signals.index(
-            (pid, signal.SIGCONT)
-        )
-        assert signals.index((pid, signal.SIGCONT)) < signals.index(
-            (pid, signal.SIGTERM)
-        )
-        assert (pid, signal.SIGKILL) in signals
-    assert all(process.waited == 1 for process in processes)
-
-
-def test_monitor_exception_still_terminates_and_reaps_all_ranks(isolated_config):
-    processes = [FakeProcess(401, [None] * 10), FakeProcess(402, [None] * 10)]
+def test_monitor_exception_does_not_interrupt_running_processes(isolated_config):
+    processes = [FakeProcess(401, [None, 0]), FakeProcess(402, [None, 0])]
     runner, _, signals = process_runner(
         isolated_config,
-        FakeResourceGuard((RuntimeError("sampler failed"),)),
+        FakeResourceMonitor((RuntimeError("sampler failed"),)),
         processes,
     )
 
-    with pytest.raises(RuntimeError, match="sampler failed"):
-        runner.execute(CommandSpec("encode", ("worker",), gpu_ranks=2), "shard")
+    runner.execute(CommandSpec("encode", ("worker",), gpu_ranks=2), "shard")
 
-    assert all((process.pid, signal.SIGTERM) in signals for process in processes)
+    assert signals == []
     assert all(process.waited == 1 for process in processes)
 
 
 def test_stable_supervisor_identity_mismatch_never_signals_unrelated_process(
     isolated_config,
 ):
+    failed = FakeProcess(500, [7])
     process = FakeProcess(501, [None] * 10)
     runner, _, signals = process_runner(
         isolated_config,
-        FakeResourceGuard((RuntimeError("sampler failed"),)),
-        [process],
+        FakeResourceMonitor(),
+        [failed, process],
         group_ids={501: 999},
     )
 
     with pytest.raises(ProcessGroupSafetyError, match="stable supervisor"):
-        runner.execute(CommandSpec("worker", ("worker",)), "shard")
+        runner.execute(
+            CommandSpec("worker", ("worker",), gpu_ranks=2), "shard"
+        )
 
     assert signals == []
     assert process.waited == 2
@@ -1301,7 +1322,7 @@ def test_stable_supervisor_identity_mismatch_never_signals_unrelated_process(
 
 def test_negative_rank_count_fails_instead_of_becoming_noop(isolated_config):
     runner, created, signals = process_runner(
-        isolated_config, FakeResourceGuard(), []
+        isolated_config, FakeResourceMonitor(), []
     )
 
     with pytest.raises(InfrastructureError, match="rank count"):
@@ -1360,7 +1381,7 @@ def test_pipeline_services_cache_immutable_registry_for_shard_planning(
     )
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         registry_store=registry,
     )
 
@@ -1381,7 +1402,7 @@ def test_pipeline_services_accept_verified_archive_tool_commit(
     )
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
     )
 
     assert services._resolved_tool_commit() == expected
@@ -1393,7 +1414,7 @@ def test_pipeline_services_reject_invalid_archive_tool_commit(
     monkeypatch.setenv("PIXAL3D_TOOL_COMMIT", "not-a-commit")
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
     )
 
     with pytest.raises(InfrastructureError, match="deployment identity"):
@@ -1480,7 +1501,7 @@ def test_plan_uses_exact_local_reserve_and_freezes_immutable_batches(
 
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         registry_store=registry,
         pilot_reader=pilot,
         disk_usage=disk_usage,
@@ -1518,7 +1539,7 @@ def test_freeze_writes_independent_batch_files_concurrently(
 ):
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
     )
     shas = tuple(f"{index:064x}" for index in range(8))
     batches = tuple((asset,) for asset in shas)
@@ -1565,7 +1586,7 @@ def test_read_only_plan_does_not_create_configured_roots(isolated_config):
     )
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         registry_store=registry,
         pilot_reader=FakePilotReader(100),
         disk_usage=lambda path: SimpleNamespace(
@@ -1595,7 +1616,7 @@ def test_plan_rejects_unvalidated_pilot_p95(isolated_config, pilot_value):
     )
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         registry_store=registry,
         pilot_reader=FakePilotReader(pilot_value),
         disk_usage=lambda path: SimpleNamespace(total=1000, free=1000),
@@ -1622,7 +1643,7 @@ def test_resume_reuses_frozen_batches_without_replanning(isolated_config):
     audits = []
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         registry_store=registry,
         pilot_reader=FakePilotReader(100),
         disk_usage=lambda path: SimpleNamespace(
@@ -1664,7 +1685,7 @@ def test_run_batch_executes_only_the_claimed_frozen_batch(isolated_config):
     accounting = FakeAccounting()
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         registry_store=registry,
         runner=runner,
         project_accounting=accounting,
@@ -1716,7 +1737,7 @@ def test_run_batch_checkpoints_cached_accounting_without_full_reconciliation(
     accounting = CachedAccounting()
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         registry_store=registry,
         runner=FakeShardRunner(),
         project_accounting=accounting,
@@ -1741,7 +1762,7 @@ def test_run_batch_rejects_unknown_batch(isolated_config):
     asset = "a" * 64
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         registry_store=FakeRegistry(
             pd.DataFrame(
                 {
@@ -1781,7 +1802,7 @@ def test_resume_accepts_frozen_gate_subset_without_expanding_scope(
     runner = FakeShardRunner()
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         registry_store=registry,
         pilot_reader=FakePilotReader(100),
         disk_usage=lambda path: SimpleNamespace(
@@ -1821,7 +1842,7 @@ def test_qualification_audit_reloads_gate_checkpoint_with_real_runner(
     )
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         registry_store=registry,
         pilot_reader=FakePilotReader(100),
         disk_usage=lambda path: SimpleNamespace(
@@ -1870,7 +1891,7 @@ def test_gate_scopes_isolate_qualification_from_full_production_shard(
     )
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         registry_store=registry,
         pilot_reader=FakePilotReader(100),
         disk_usage=lambda path: SimpleNamespace(
@@ -1897,7 +1918,7 @@ def test_gate_scopes_isolate_qualification_from_full_production_shard(
 def test_production_never_accepts_a_restricted_count(isolated_config):
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
     )
 
     with pytest.raises(ValueError, match="full canonical shard"):
@@ -1919,7 +1940,7 @@ def test_resume_gate_never_falls_back_to_another_frozen_scope(isolated_config):
     )
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         registry_store=registry,
         pilot_reader=FakePilotReader(100),
         disk_usage=lambda path: SimpleNamespace(
@@ -1937,7 +1958,7 @@ def test_frozen_manifest_parser_does_not_hide_programmer_defects(
     error_type, isolated_config, monkeypatch
 ):
     services = PipelineServices(
-        isolated_config, resource_guard=FakeResourceGuard()
+        isolated_config, resource_monitor=FakeResourceMonitor()
     )
     root = services._batch_root("smoke", "ABO", "ABO-00000")
     root.mkdir(parents=True)
@@ -1973,7 +1994,7 @@ def test_gate_identity_isolates_runtime_and_publication_paths(isolated_config):
         gate="production",
     )
     services = PipelineServices(
-        isolated_config, resource_guard=FakeResourceGuard()
+        isolated_config, resource_monitor=FakeResourceMonitor()
     )
 
     assert smoke.instances != production.instances
@@ -2002,7 +2023,7 @@ def test_record_family_exclusion_round_trips_without_terminal_outcome(
     write_instances(context, (asset_sha,))
     runner = PipelineRunner(
         isolated_config,
-        FakeResourceGuard(),
+        FakeResourceMonitor(),
         {},
         {},
         command_builder=lambda _context, _config: (),
@@ -2084,7 +2105,7 @@ def _family_services(isolated_config, tmp_path, **service_kwargs):
     write_instances(context, assets)
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         **service_kwargs,
     )
     runner = services.runner
@@ -2458,7 +2479,7 @@ def test_corrupt_frozen_batch_manifest_fails_closed(isolated_config):
     )
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         registry_store=registry,
         pilot_reader=FakePilotReader(100),
         disk_usage=lambda path: SimpleNamespace(
@@ -2509,7 +2530,7 @@ def test_read_raw_records_normalizes_content_and_companions(
         ),
     )
     services = PipelineServices(
-        isolated_config, resource_guard=FakeResourceGuard()
+        isolated_config, resource_monitor=FakeResourceMonitor()
     )
 
     records = services._read_raw_records(
@@ -2553,7 +2574,7 @@ def test_read_raw_records_rejects_duplicate_companion_json_keys(
         ),
     )
     services = PipelineServices(
-        isolated_config, resource_guard=FakeResourceGuard()
+        isolated_config, resource_monitor=FakeResourceMonitor()
     )
 
     with pytest.raises(ValidationError, match="duplicate raw companion path"):
@@ -2577,7 +2598,7 @@ def test_stage_raw_preserves_verified_adapter_relative_layout(
         context, ({"sha256": asset_sha, "local_path": relative},)
     )
     services = PipelineServices(
-        isolated_config, resource_guard=FakeResourceGuard()
+        isolated_config, resource_monitor=FakeResourceMonitor()
     )
 
     services.stage_raw(context)
@@ -2630,7 +2651,7 @@ def test_stage_raw_copies_full_declared_package_using_content_hashes(
         ),
     )
     services = PipelineServices(
-        isolated_config, resource_guard=FakeResourceGuard()
+        isolated_config, resource_monitor=FakeResourceMonitor()
     )
 
     services.stage_raw(context)
@@ -2644,7 +2665,7 @@ def test_stage_raw_copies_full_declared_package_using_content_hashes(
 def _download_validation_service(isolated_config, context, attempts):
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         published_batch_verifier=lambda _context: (_ for _ in ()).throw(
             ValidationError("published outputs are not present")
         ),
@@ -2729,7 +2750,7 @@ def test_stage_raw_uses_only_non_quarantined_assets(
         context, ({"sha256": completed, "local_path": relative},)
     )
     services = PipelineServices(
-        isolated_config, resource_guard=FakeResourceGuard()
+        isolated_config, resource_monitor=FakeResourceMonitor()
     )
     checkpoint = PipelineCheckpoint(context.shard_id, gate=context.gate)
     checkpoint.quality_outcomes[quarantined] = "failure"
@@ -2759,7 +2780,7 @@ def test_stage_raw_rejects_escape_paths(isolated_config, tmp_path, relative):
         context, ({"sha256": asset_sha, "local_path": relative},)
     )
     services = PipelineServices(
-        isolated_config, resource_guard=FakeResourceGuard()
+        isolated_config, resource_monitor=FakeResourceMonitor()
     )
 
     with pytest.raises(ValidationError, match="unsafe raw path"):
@@ -2781,7 +2802,7 @@ def test_stage_raw_rejects_symlinked_source(isolated_config, tmp_path):
         context, ({"sha256": asset_sha, "local_path": relative},)
     )
     services = PipelineServices(
-        isolated_config, resource_guard=FakeResourceGuard()
+        isolated_config, resource_monitor=FakeResourceMonitor()
     )
 
     with pytest.raises(ValidationError, match="symlink"):
@@ -2809,7 +2830,7 @@ def test_stage_raw_extracts_only_selected_shared_zip_member(
         ({"sha256": asset_sha, "local_path": selected_relative},),
     )
     services = PipelineServices(
-        isolated_config, resource_guard=FakeResourceGuard()
+        isolated_config, resource_monitor=FakeResourceMonitor()
     )
 
     services.stage_raw(context)
@@ -2841,7 +2862,7 @@ def test_stage_raw_rejects_duplicate_zip_members(isolated_config, tmp_path):
         ({"sha256": asset_sha, "local_path": selected_relative},),
     )
     services = PipelineServices(
-        isolated_config, resource_guard=FakeResourceGuard()
+        isolated_config, resource_monitor=FakeResourceMonitor()
     )
 
     with pytest.raises(ValidationError, match="duplicate ZIP member"):
@@ -2875,7 +2896,7 @@ def test_build_packs_publishes_exactly_eight_family_layouts(
 
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         project_accounting=FakeAccounting(),
         output_validator=lambda context: None,
         pack_publisher=pack_publisher,
@@ -2896,7 +2917,7 @@ def test_build_packs_rejects_inexact_family_mapping(isolated_config, tmp_path):
     calls = []
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         project_accounting=FakeAccounting(),
         output_validator=lambda context: None,
         pack_member_builder=lambda context: {"common": []},
@@ -2942,7 +2963,7 @@ def test_published_index_must_point_to_canonical_family_path(
     write_instances(context, (asset_sha,))
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         project_accounting=FakeAccounting(),
         tool_commit="test-commit",
     )
@@ -2999,7 +3020,7 @@ def test_logical_shard_index_rejects_unfrozen_extra_batch(
     index["batches"]["batch999"] = index["batches"]["batch000"]
     index_path.write_text(json.dumps(index))
     services = PipelineServices(
-        isolated_config, resource_guard=FakeResourceGuard()
+        isolated_config, resource_monitor=FakeResourceMonitor()
     )
 
     with pytest.raises(ValidationError, match="batch set"):
@@ -3028,7 +3049,7 @@ def test_archive_verifies_before_zero_reference_deletion(isolated_config):
     audit_calls = []
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         reference_counter=counter,
         project_accounting=FakeAccounting(),
         published_batch_verifier=audit_calls.append,
@@ -3095,7 +3116,7 @@ def test_raw_archive_contains_primary_and_companion_content_hashes(
     )
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         reference_counter=FakeReferenceCounter(1),
         project_accounting=FakeAccounting(),
         published_batch_verifier=lambda active_context: None,
@@ -3145,7 +3166,7 @@ def test_raw_archive_checks_primary_reference_before_companion_cleanup(
     counter = FakeReferenceCounter(0)
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         reference_counter=counter,
         project_accounting=FakeAccounting(),
         published_batch_verifier=lambda active_context: None,
@@ -3182,7 +3203,7 @@ def test_archive_fails_closed_without_reference_provider(isolated_config):
     )
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         project_accounting=FakeAccounting(),
         published_batch_verifier=lambda context: None,
         tool_commit="test-commit",
@@ -3210,7 +3231,7 @@ def test_archive_rejects_symlinked_final_output(isolated_config):
     )
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         reference_counter=FakeReferenceCounter(1),
         project_accounting=FakeAccounting(),
         published_batch_verifier=lambda context: None,
@@ -3244,7 +3265,7 @@ def test_resolution_cleanup_requires_valid_encoded_outputs(
 
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         resolution_validator=validate_resolution,
     )
 
@@ -3274,7 +3295,7 @@ def test_local_cleanup_requires_pack_and_archive_audits(
 
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         published_batch_verifier=batch_audit,
         raw_archive_verifier=archive_audit,
     )
@@ -3306,7 +3327,7 @@ def test_shape_validation_precedes_pbr_and_cleanup_requires_both(
         orchestrator_module, "validate_scale", lambda path: None
     )
     services = PipelineServices(
-        isolated_config, resource_guard=FakeResourceGuard()
+        isolated_config, resource_monitor=FakeResourceMonitor()
     )
     services.runner.active_context = context
     for relative in (
@@ -3400,62 +3421,6 @@ def supervisor_runner(config, guard, supervisors):
     return runner, created
 
 
-def test_supervisor_cleanup_waits_are_bounded_and_preserve_resource_stop(
-    isolated_config,
-):
-    stop = ResourceDecision(ResourceAction.STOP, ("disk hard",))
-    supervisor = FakeSupervisor(700, [None] * 10)
-    runner, _ = supervisor_runner(
-        isolated_config, FakeResourceGuard((stop,)), [supervisor]
-    )
-
-    with pytest.raises(ResourceLimitExceeded, match="disk hard"):
-        runner.execute(CommandSpec("worker", ("worker",)), "shard")
-
-    assert supervisor.controls == ["terminate", "kill"]
-    assert supervisor.wait_timeouts == [3]
-
-
-def test_resource_stop_survives_supervisor_cleanup_failures(isolated_config):
-    stop = ResourceDecision(ResourceAction.STOP, ("memory hard",))
-
-    def fail_control(supervisor, action):
-        raise ProcessGroupSafetyError(f"cannot {action} stable supervisor")
-
-    supervisor = FakeSupervisor(701, [None] * 10, control=fail_control)
-    runner, _ = supervisor_runner(
-        isolated_config, FakeResourceGuard((stop,)), [supervisor]
-    )
-
-    with pytest.raises(ResourceLimitExceeded, match="memory hard") as caught:
-        runner.execute(CommandSpec("worker", ("worker",)), "shard")
-
-    assert supervisor.wait_timeouts == [3, 3]
-    assert any(
-        "cleanup" in note.lower() for note in getattr(caught.value, "__notes__", ())
-    )
-
-
-def test_pidfd_supervisor_exit_race_never_controls_reused_pid(isolated_config):
-    stop = ResourceDecision(ResourceAction.STOP, ("CPU hard",))
-    reused_process_controls = []
-
-    def exit_before_control(supervisor, action):
-        supervisor.returncode = 0
-        raise ProcessLookupError("original supervisor exited")
-
-    supervisor = FakeSupervisor(702, [None] * 10, control=exit_before_control)
-    runner, _ = supervisor_runner(
-        isolated_config, FakeResourceGuard((stop,)), [supervisor]
-    )
-
-    with pytest.raises(ResourceLimitExceeded, match="CPU hard"):
-        runner.execute(CommandSpec("worker", ("worker",)), "shard")
-
-    assert reused_process_controls == []
-    assert supervisor.controls == ["terminate"]
-    assert supervisor.wait_timeouts == [3]
-
 
 class CrashAfterPersistRunner(RecordingRunner):
     def __init__(self, config, command):
@@ -3489,7 +3454,7 @@ def quality_services(config, context, failures):
 
     services = PipelineServices(
         config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         asset_output_validator=validate_asset,
     )
     services.runner.command_builder = lambda active_context, active_config: (
@@ -3646,7 +3611,7 @@ def test_dump_stats_and_voxel_validators_reject_structurally_corrupt_outputs(
     asset_sha = "a" * 64
     write_instances(context, (asset_sha,))
     services = PipelineServices(
-        isolated_config, resource_guard=FakeResourceGuard()
+        isolated_config, resource_monitor=FakeResourceMonitor()
     )
     services.runner.active_context = context
 
@@ -3704,47 +3669,6 @@ def test_completed_validator_io_failure_is_immediate_infrastructure_stop(
     assert "storage unavailable" in caught.value.report.reason
 
 
-def test_admission_provider_failure_is_immediate_infrastructure_stop(
-    isolated_config, shard_context
-):
-    command = CommandSpec("worker", ("worker",))
-    reports = []
-    runner = RecordingRunner(isolated_config, (command,), reports=reports)
-    runner.resource_guard.wait_for_admission = lambda shard, name: (
-        _ for _ in ()
-    ).throw(RuntimeError("telemetry writer failed"))
-
-    with pytest.raises(PipelineStopped) as caught:
-        runner.run_shard(shard_context)
-
-    assert runner.executed == []
-    assert caught.value.report.category == EscalationCategory.INFRASTRUCTURE
-    assert "telemetry writer failed" in caught.value.report.reason
-
-
-def test_monitor_provider_failure_is_immediate_infrastructure_stop(
-    isolated_config, shard_context
-):
-    command = CommandSpec("worker", ("worker",))
-    supervisors = [FakeSupervisor(800, [None] * 10)]
-    reports = []
-    runner, _ = supervisor_runner(
-        isolated_config,
-        FakeResourceGuard((RuntimeError("sampler failed"),)),
-        supervisors,
-    )
-    runner.command_builder = lambda context, config: (command,)
-    runner.validators = {command.name: lambda: True}
-    runner.report_writer = reports.append
-    runner.checkpoint_path = lambda context: context.work_root / "checkpoint.json"
-
-    with pytest.raises(PipelineStopped) as caught:
-        runner.run_shard(shard_context)
-
-    assert caught.value.report.category == EscalationCategory.INFRASTRUCTURE
-    assert "sampler failed" in caught.value.report.reason
-    assert len(supervisors[0].wait_timeouts) == 1
-
 
 def test_checkpoint_parent_symlink_is_never_followed(isolated_config, tmp_path):
     outside = tmp_path / "outside"
@@ -3752,7 +3676,7 @@ def test_checkpoint_parent_symlink_is_never_followed(isolated_config, tmp_path):
     linked_parent = tmp_path / "linked"
     linked_parent.symlink_to(outside, target_is_directory=True)
     checkpoint_path = linked_parent / "checkpoint.json"
-    runner = PipelineRunner(isolated_config, FakeResourceGuard(), {}, {})
+    runner = PipelineRunner(isolated_config, FakeResourceMonitor(), {}, {})
 
     with pytest.raises(CheckpointError, match="unsafe checkpoint"):
         runner.save_checkpoint(
@@ -3766,7 +3690,7 @@ def test_checkpoint_parent_creation_accepts_concurrent_directory_winner(
     isolated_config, tmp_path, monkeypatch
 ):
     checkpoint_path = tmp_path / "shared" / "nested" / "checkpoint.json"
-    runner = PipelineRunner(isolated_config, FakeResourceGuard(), {}, {})
+    runner = PipelineRunner(isolated_config, FakeResourceMonitor(), {}, {})
     real_mkdir = orchestrator_module.os.mkdir
 
     def peer_wins_mkdir(path, mode=0o777, *, dir_fd=None):
@@ -3797,7 +3721,7 @@ def test_raw_metadata_parent_symlink_is_never_followed(
     )
     (root / "raw").symlink_to(outside, target_is_directory=True)
     services = PipelineServices(
-        isolated_config, resource_guard=FakeResourceGuard()
+        isolated_config, resource_monitor=FakeResourceMonitor()
     )
 
     with pytest.raises(ValidationError, match="raw metadata"):
@@ -3866,7 +3790,7 @@ def publish_compatibility_pack(config, context, producer_commit):
     write_instances(context, (asset_sha,))
     services = PipelineServices(
         config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         project_accounting=FakeAccounting(),
         tool_commit=producer_commit,
     )
@@ -3903,7 +3827,7 @@ def publish_compatibility_pack(config, context, producer_commit):
 def compatibility_verifier(config, context, asset_sha):
     services = PipelineServices(
         config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         project_accounting=FakeAccounting(),
         tool_commit="current-commit",
     )
@@ -4002,7 +3926,7 @@ def test_production_raw_archive_accepts_attested_historical_tool_commit(
     historical = sorted(APPROVED_HISTORICAL_COMMITS)[0]
     producer = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         reference_counter=FakeReferenceCounter(1),
         project_accounting=FakeAccounting(),
         published_batch_verifier=lambda active_context: None,
@@ -4042,7 +3966,7 @@ def test_pack_publication_uses_frozen_quality_admission_counts(
 
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         project_accounting=FakeAccounting(),
         output_validator=lambda context: None,
         pack_publisher=pack_publisher,
@@ -4092,7 +4016,7 @@ def test_pack_default_validation_skips_quarantined_assets(
 
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         project_accounting=FakeAccounting(),
         asset_output_validator=lambda active_context, asset_sha: validated.append(
             asset_sha
@@ -4125,7 +4049,7 @@ def test_published_pack_rejects_stale_frozen_sha_identity(
     write_instances(context, (new_sha,))
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         project_accounting=FakeAccounting(),
         tool_commit="test-commit",
     )
@@ -4159,7 +4083,7 @@ def test_raw_archive_audit_binds_tool_and_quality_counts(
     )
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         reference_counter=FakeReferenceCounter(1),
         project_accounting=FakeAccounting(),
         published_batch_verifier=lambda context: None,
@@ -4194,7 +4118,7 @@ def test_archive_records_data3_publication_and_data2_deletion_deltas(
     accounting = FakeAccounting()
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         reference_counter=FakeReferenceCounter(0),
         project_accounting=accounting,
         published_batch_verifier=lambda context: None,
@@ -4231,7 +4155,7 @@ def test_resume_reconciles_accounting_at_batch_and_shard_boundaries(
     accounting = FakeAccounting()
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         registry_store=registry,
         pilot_reader=FakePilotReader(100),
         disk_usage=lambda path: SimpleNamespace(
@@ -4253,8 +4177,7 @@ def test_stop_persistence_failures_preserve_primary_and_write_local_fallback(
     isolated_config, shard_context, tmp_path
 ):
     command = CommandSpec("worker", ("worker",))
-    guard = FakeResourceGuard()
-    guard.stop_next("disk hard primary")
+    guard = FakeResourceMonitor()
     fallback = tmp_path / "local-fallback/report.json"
     runner = PipelineRunner(
         isolated_config,
@@ -4273,7 +4196,14 @@ def test_stop_persistence_failures_preserve_primary_and_write_local_fallback(
     )
 
     with pytest.raises(PipelineStopped) as caught:
-        runner.run_shard(shard_context)
+        runner.stop(
+            shard_context,
+            command.name,
+            "disk hard primary",
+            PipelineCheckpoint(shard_context.shard_id),
+            category=EscalationCategory.RESOURCE,
+            exit_code=3,
+        )
 
     assert caught.value.report.reason == "disk hard primary"
     assert caught.value.report.category == EscalationCategory.RESOURCE
@@ -4294,8 +4224,7 @@ def test_fallback_failure_still_raises_pipeline_stopped(
     isolated_config, shard_context, tmp_path
 ):
     command = CommandSpec("worker", ("worker",))
-    guard = FakeResourceGuard()
-    guard.stop_next("resource primary")
+    guard = FakeResourceMonitor()
     outside = tmp_path / "outside"
     outside.mkdir()
     linked = tmp_path / "linked"
@@ -4314,7 +4243,14 @@ def test_fallback_failure_still_raises_pipeline_stopped(
     )
 
     with pytest.raises(PipelineStopped) as caught:
-        runner.run_shard(shard_context)
+        runner.stop(
+            shard_context,
+            command.name,
+            "resource primary",
+            PipelineCheckpoint(shard_context.shard_id),
+            category=EscalationCategory.INFRASTRUCTURE,
+            exit_code=2,
+        )
 
     assert caught.value.report.reason == "resource primary"
     assert any(
@@ -4369,7 +4305,7 @@ def test_accounting_reconciliation_failure_checkpoints_and_reports(
     )
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         registry_store=registry,
         pilot_reader=FakePilotReader(100),
         disk_usage=lambda path: SimpleNamespace(
@@ -4409,7 +4345,7 @@ def test_cleanup_rejects_symlinked_ancestor_without_deleting_outside(
     payload.write_text("keep")
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         published_batch_verifier=lambda context: None,
         raw_archive_verifier=lambda context: None,
     )
@@ -4419,25 +4355,6 @@ def test_cleanup_rejects_symlinked_ancestor_without_deleting_outside(
 
     assert payload.read_text() == "keep"
 
-
-def test_invalid_monitor_decision_is_immediate_infrastructure_stop(
-    isolated_config, shard_context
-):
-    command = CommandSpec("worker", ("worker",))
-    supervisor = FakeSupervisor(900, [None] * 10)
-    runner, _ = supervisor_runner(
-        isolated_config, FakeResourceGuard((object(),)), [supervisor]
-    )
-    runner.command_builder = lambda context, config: (command,)
-    runner.validators = {command.name: lambda: True}
-    runner.checkpoint_path = lambda context: context.work_root / "checkpoint.json"
-
-    with pytest.raises(PipelineStopped) as caught:
-        runner.run_shard(shard_context)
-
-    assert caught.value.report.category == EscalationCategory.INFRASTRUCTURE
-    assert "monitor" in caught.value.report.reason
-    assert len(supervisor.wait_timeouts) == 1
 
 
 def test_pack_publication_records_data2_delta(isolated_config, tmp_path):
@@ -4457,7 +4374,7 @@ def test_pack_publication_records_data2_delta(isolated_config, tmp_path):
 
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         project_accounting=accounting,
         output_validator=lambda context: None,
         pack_publisher=publisher,
@@ -4485,7 +4402,7 @@ def test_published_pack_rejects_stale_expected_members(
     publish_dummy_batch(isolated_config, context, asset_sha)
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         project_accounting=FakeAccounting(),
         tool_commit="test-commit",
     )
@@ -4505,7 +4422,7 @@ def test_published_pack_rejects_stale_quality_counts(
     write_instances(context, (asset_sha,))
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         project_accounting=FakeAccounting(),
         tool_commit="test-commit",
     )
@@ -4558,7 +4475,7 @@ def test_cleanup_removes_processed_roots_before_staged_raw(
     )
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         published_batch_verifier=lambda context: None,
         raw_archive_verifier=lambda context: None,
     )
@@ -4576,8 +4493,7 @@ def test_telemetry_failure_during_stop_is_exposed_not_suppressing_primary(
     isolated_config, shard_context, tmp_path
 ):
     command = CommandSpec("worker", ("worker",))
-    guard = FakeResourceGuard()
-    guard.stop_next("resource primary")
+    guard = FakeResourceMonitor()
     guard.last_five_minutes = lambda: (_ for _ in ()).throw(
         RuntimeError("telemetry unavailable")
     )
@@ -4593,7 +4509,14 @@ def test_telemetry_failure_during_stop_is_exposed_not_suppressing_primary(
     )
 
     with pytest.raises(PipelineStopped) as caught:
-        runner.run_shard(shard_context)
+        runner.stop(
+            shard_context,
+            command.name,
+            "resource primary",
+            PipelineCheckpoint(shard_context.shard_id),
+            category=EscalationCategory.INFRASTRUCTURE,
+            exit_code=2,
+        )
 
     assert caught.value.report.reason == "resource primary"
     assert any(
@@ -4611,8 +4534,7 @@ def test_service_report_writer_rejects_symlinked_data2_ancestor(
     isolated_config.paths.data2_root.symlink_to(
         outside, target_is_directory=True
     )
-    guard = FakeResourceGuard()
-    guard.stop_next("primary")
+    guard = FakeResourceMonitor()
     command = CommandSpec("worker", ("worker",))
     producer = PipelineRunner(
         isolated_config,
@@ -4623,9 +4545,16 @@ def test_service_report_writer_rejects_symlinked_data2_ancestor(
         checkpoint_path=lambda context: tmp_path / "checkpoint.json",
     )
     with pytest.raises(PipelineStopped) as caught:
-        producer.run_shard(shard_context)
+        producer.stop(
+            shard_context,
+            command.name,
+            "primary",
+            PipelineCheckpoint(shard_context.shard_id),
+            category=EscalationCategory.INFRASTRUCTURE,
+            exit_code=2,
+        )
     services = PipelineServices(
-        isolated_config, resource_guard=FakeResourceGuard()
+        isolated_config, resource_monitor=FakeResourceMonitor()
     )
 
     with pytest.raises(OSError):
@@ -4642,7 +4571,7 @@ def test_published_validator_io_failure_is_not_downgraded(
     )
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         published_batch_verifier=lambda context: (_ for _ in ()).throw(
             OSError("data2 I/O failed")
         ),
@@ -4656,7 +4585,7 @@ def test_raw_metadata_io_failure_is_not_downgraded(
     isolated_config, monkeypatch, tmp_path
 ):
     services = PipelineServices(
-        isolated_config, resource_guard=FakeResourceGuard()
+        isolated_config, resource_monitor=FakeResourceMonitor()
     )
     monkeypatch.setattr(
         orchestrator_module,
@@ -4687,7 +4616,7 @@ def test_accounting_delta_failure_reconciles_before_stopping(
     accounting = RecoverableAccounting()
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         project_accounting=accounting,
     )
 
@@ -4715,7 +4644,7 @@ def test_accounting_boundaries_do_not_hide_programmer_defects(
 
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         project_accounting=DefectiveAccounting(),
     )
 
@@ -4735,7 +4664,7 @@ def test_published_index_io_failure_propagates(
     write_instances(context, (asset_sha,))
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         project_accounting=FakeAccounting(),
         tool_commit="test-commit",
     )
@@ -4767,7 +4696,7 @@ def test_raw_archive_manifest_io_failure_propagates(
     write_instances(context, (asset_sha,))
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         project_accounting=FakeAccounting(),
         tool_commit="test-commit",
     )
@@ -4795,7 +4724,7 @@ def test_logical_index_io_failure_propagates(
     isolated_config, monkeypatch
 ):
     services = PipelineServices(
-        isolated_config, resource_guard=FakeResourceGuard()
+        isolated_config, resource_monitor=FakeResourceMonitor()
     )
     index_path = (
         isolated_config.paths.data2_root
@@ -5036,7 +4965,7 @@ def test_default_dump_validator_propagates_source_io_failure(
         tmp_path / "dump-validator-io", "ABO", "ABO-00000"
     )
     services = PipelineServices(
-        isolated_config, resource_guard=FakeResourceGuard()
+        isolated_config, resource_monitor=FakeResourceMonitor()
     )
     monkeypatch.setattr(
         orchestrator_module,
@@ -5191,7 +5120,6 @@ def test_supervisor_resume_handler_ignores_self_delivery_while_resuming_group():
 def test_cleanup_finally_kills_reaps_and_closes_stubborn_supervisor(
     isolated_config,
 ):
-    stop = ResourceDecision(ResourceAction.STOP, ("disk hard",))
     kill_count = 0
 
     def exit_only_after_final_kill(supervisor, action):
@@ -5206,12 +5134,15 @@ def test_cleanup_finally_kills_reaps_and_closes_stubborn_supervisor(
     )
     supervisor.closed = False
     supervisor.close = lambda: setattr(supervisor, "closed", True)
+    failed = FakeSupervisor(1000, [7])
     runner, _ = supervisor_runner(
-        isolated_config, FakeResourceGuard((stop,)), [supervisor]
+        isolated_config, FakeResourceMonitor(), [failed, supervisor]
     )
 
-    with pytest.raises(ResourceLimitExceeded, match="disk hard"):
-        runner.execute(CommandSpec("worker", ("worker",)), "shard")
+    with pytest.raises(ProcessGroupSafetyError, match="did not exit"):
+        runner.execute(
+            CommandSpec("worker", ("worker",), gpu_ranks=2), "shard"
+        )
 
     assert supervisor.controls == ["terminate", "kill", "kill"]
     assert supervisor.wait_timeouts == [3, 3]
@@ -5233,11 +5164,11 @@ def test_cleanup_closes_supervisor_when_poll_fails(isolated_config):
 
     supervisor = BrokenPollSupervisor()
     runner, _ = supervisor_runner(
-        isolated_config, FakeResourceGuard(), [supervisor]
+        isolated_config, FakeResourceMonitor(), [supervisor]
     )
 
     with pytest.raises(RuntimeError, match="poll failed"):
-        runner._terminate_and_reap([supervisor], set())
+        runner._terminate_and_reap([supervisor])
 
     assert supervisor.closed is True
 
@@ -5277,7 +5208,7 @@ def test_final_reap_failure_retains_supervisor_until_kill_and_close(
 
     supervisor = LateReapSupervisor()
     runner, _ = supervisor_runner(
-        isolated_config, FakeResourceGuard(), [supervisor]
+        isolated_config, FakeResourceMonitor(), [supervisor]
     )
 
     with pytest.raises(ProcessGroupSafetyError, match="did not exit"):
@@ -5312,7 +5243,7 @@ def test_production_stage_quality_is_durable_and_filters_downstream_instances(
     downstream_instances = []
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         asset_output_validator=lambda active_context, asset_sha: None,
     )
     services.runner.command_builder = lambda active_context, config: commands
@@ -5425,7 +5356,7 @@ def test_real_asset_stats_leaf_part_is_accepted_by_production_validator(
     assert part.is_file()
     assert not (context.metadata_root / "asset_stats/metadata.csv").exists()
     services = PipelineServices(
-        isolated_config, resource_guard=FakeResourceGuard()
+        isolated_config, resource_monitor=FakeResourceMonitor()
     )
     services._validate_asset_stats(context)
 
@@ -5452,7 +5383,7 @@ def test_parallel_asset_stats_validator_ignores_qualification_parts(
         f"{asset_sha},1,3,2.0\n"
     )
     services = PipelineServices(
-        isolated_config, resource_guard=FakeResourceGuard()
+        isolated_config, resource_monitor=FakeResourceMonitor()
     )
 
     services._validate_asset_stats(context)
@@ -5464,7 +5395,7 @@ def test_escalation_report_includes_terminal_asset_counts(
     reports = []
     runner = PipelineRunner(
         isolated_config,
-        FakeResourceGuard(),
+        FakeResourceMonitor(),
         {},
         {},
         report_writer=reports.append,
@@ -5720,7 +5651,7 @@ def test_raw_archive_audit_rejects_unrelated_valid_member_mapping(
     )
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         reference_counter=FakeReferenceCounter(1),
         project_accounting=FakeAccounting(),
         published_batch_verifier=lambda active_context: None,
@@ -5749,7 +5680,7 @@ def test_raw_metadata_write_io_failure_propagates(
     isolated_config, monkeypatch, tmp_path, fault
 ):
     services = PipelineServices(
-        isolated_config, resource_guard=FakeResourceGuard()
+        isolated_config, resource_monitor=FakeResourceMonitor()
     )
     monkeypatch.setattr(
         orchestrator_module,
@@ -5780,7 +5711,7 @@ def test_zip_source_eio_propagates(isolated_config, monkeypatch, tmp_path):
         ),
     )
     services = PipelineServices(
-        isolated_config, resource_guard=FakeResourceGuard()
+        isolated_config, resource_monitor=FakeResourceMonitor()
     )
     monkeypatch.setattr(
         orchestrator_module,
@@ -5806,7 +5737,7 @@ def test_cleanup_io_failure_propagates(
     )
     services = PipelineServices(
         isolated_config,
-        resource_guard=FakeResourceGuard(),
+        resource_monitor=FakeResourceMonitor(),
         published_batch_verifier=lambda active_context: None,
         raw_archive_verifier=lambda active_context: None,
     )
@@ -5831,7 +5762,7 @@ def test_accounting_probe_io_failure_propagates(
     isolated_config, monkeypatch, tmp_path, fault
 ):
     services = PipelineServices(
-        isolated_config, resource_guard=FakeResourceGuard()
+        isolated_config, resource_monitor=FakeResourceMonitor()
     )
     monkeypatch.setattr(
         orchestrator_module,

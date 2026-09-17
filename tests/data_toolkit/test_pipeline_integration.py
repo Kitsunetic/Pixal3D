@@ -18,8 +18,6 @@ from data_toolkit.pipeline.config import load_config
 from data_toolkit.pipeline.orchestrator import PipelineServices
 from data_toolkit.pipeline.packing import PACK_FAMILIES, verify_pack
 from data_toolkit.pipeline.resources import (
-    ResourceAction,
-    ResourceDecision,
     ResourceSampler,
 )
 from data_toolkit.pipeline.runtime import CanonicalRegistryBuilder, SafeRegistryStore
@@ -315,15 +313,13 @@ def parallel_synthetic_config(tmp_config):
     return config
 
 
-class _AlwaysRunGuard:
-    def wait_for_admission(self, _shard_id, _command):
+class _RecordingResourceMonitor:
+    def record(self, _shard_id, _command):
         return None
 
     def last_five_minutes(self):
         return ()
 
-    def check(self, _shard_id, _command):
-        return ResourceDecision(ResourceAction.RUN, ())
 
 
 class _OneMiBPilot:
@@ -361,7 +357,7 @@ def test_65_asset_production_batch_runs_as_two_restartable_chunks(
     )
     services = PipelineServices(
         config,
-        resource_guard=_AlwaysRunGuard(),
+        resource_monitor=_RecordingResourceMonitor(),
         pilot_reader=_OneMiBPilot(),
         reference_counter=_KeepRawReferences(),
         project_accounting=_NoopAccounting(),
@@ -458,7 +454,7 @@ def test_parallelism_benchmark_executes_frozen_64_asset_scope(
 
     services = PipelineServices(
         config,
-        resource_guard=_AlwaysRunGuard(),
+        resource_monitor=_RecordingResourceMonitor(),
         pilot_reader=_OneMiBPilot(),
         registry_store=registry,
         tool_commit="parallel-benchmark-integration-test",

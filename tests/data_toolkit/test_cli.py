@@ -3082,7 +3082,7 @@ def test_mutating_runtime_injects_all_task10_providers(tmp_config):
         assert type(services.pilot_reader).__name__ != "_MissingPilotReader"
         assert type(services.reference_counter).__name__ != "_MissingReferenceCounter"
         assert type(services.project_accounting).__name__ != "_MissingProjectAccounting"
-        assert type(services.resource_guard).__name__ != "_MissingResourceGuard"
+        assert type(services.resource_monitor).__name__ == "ResourceMonitor"
         assert services.registry_builder is not None
         assert services.report_builder is not None
 
@@ -3101,7 +3101,7 @@ def test_mutating_runtime_construction_is_side_effect_free(tmp_config):
 @pytest.mark.parametrize(
     "failing_factory",
     (
-        "ResourceGuard",
+        "ResourceMonitor",
         "SafeRegistryStore",
         "PilotArtifactReader",
         "FrozenReferenceCounter",
@@ -3139,13 +3139,10 @@ def test_mutating_runtime_closes_telemetry_after_lazy_init_failure(
         "data_toolkit.pipeline.runtime.ResourceSampler", lambda *args: object()
     )
     monkeypatch.setattr(
-        "data_toolkit.pipeline.runtime.ResourcePolicy", lambda *args: object()
-    )
-    monkeypatch.setattr(
         "data_toolkit.pipeline.runtime.NoFollowTelemetryWriter", Telemetry
     )
     for name in (
-        "ResourceGuard",
+        "ResourceMonitor",
         "SafeRegistryStore",
         "PilotArtifactReader",
         "FrozenReferenceCounter",

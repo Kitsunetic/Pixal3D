@@ -31,7 +31,7 @@ from .orchestrator import (
 from .operator_handoff import preserve_operator_handoff_attempts
 from .preflight import PreflightStatus, run_preflight
 from .reporting import ReportValidationError
-from .resources import ResourceAccountingError, ResourceLimitExceeded
+from .resources import ResourceAccountingError
 from .runtime import (
     ArtifactValidationError,
     build_mutating_services,
@@ -740,9 +740,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _dispatch(args, config)
     except PipelineStopped as error:
         return _stopped_exit(error)
-    except ResourceLimitExceeded as error:
-        print(str(error), file=sys.stderr)
-        return RESOURCE_STOP
     except ValidationError as error:
         print(str(error), file=sys.stderr)
         return DATA_QUALITY_STOP

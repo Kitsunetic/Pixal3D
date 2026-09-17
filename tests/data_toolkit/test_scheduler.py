@@ -13,7 +13,6 @@ import pytest
 from data_toolkit.pipeline.commands import ShardContext, build_preprocessing_dag
 from data_toolkit.pipeline.parallelism import (
     DynamicResourceBroker,
-    NodeResourceBroker,
     WorkerSpec,
 )
 from data_toolkit.pipeline.scheduler import (
@@ -22,6 +21,7 @@ from data_toolkit.pipeline.scheduler import (
     ParallelChunkScheduler,
     StageSpec,
     choose_chunk_assets,
+    resolve_frozen_chunk_assets,
     promote_chunk_outputs,
 )
 
@@ -90,8 +90,15 @@ class _TimelineExecutor:
         return {"workers": 1, "stage_index": tuple(item.name for item in _stages()).index(stage.name)}
 
 
-def _overlaps(left, right):
-    return left[0] < right[1] and right[0] < left[1]
+class _ReadyStageBarrierExecutor(_TimelineExecutor):
+    def __init__(self):
+        super().__init__()
+        self.prepare_barrier = threading.Barrier(2)
+
+    def execute(self, chunk, stage):
+        if stage.name == "prepare":
+            self.prepare_barrier.wait(timeout=0.5)
+        return super().execute(chunk, stage)
 
 
 def _scheduler(tmp_path: Path, executor, *, promoter=None):
@@ -100,7 +107,6 @@ def _scheduler(tmp_path: Path, executor, *, promoter=None):
     parent.instances.write_text("".join(f"{asset}\n" for asset in _assets(4)))
     scheduler = ParallelChunkScheduler(
         config_hash="c" * 64,
-        broker=NodeResourceBroker(cpu_limit=1, gpu_count=1),
         executor=executor,
         stages=_stages(),
         checkpoint_root=tmp_path / "checkpoints",
@@ -112,22 +118,24 @@ def _scheduler(tmp_path: Path, executor, *, promoter=None):
     return parent, scheduler
 
 
-def test_scheduler_overlaps_independent_resource_lanes(tmp_path):
+def test_scheduler_reports_parallel_chunks_and_publication_order(tmp_path):
     executor = _TimelineExecutor()
     parent, scheduler = _scheduler(tmp_path, executor)
 
     result = scheduler.run_batch(parent, _assets(4))
 
     assert result.max_chunks_in_flight == 2
-    assert _overlaps(
-        executor.intervals[("chunk001", "render")],
-        executor.intervals[("chunk000", "geometry")],
-    )
-    assert _overlaps(
-        executor.intervals[("chunk001", "geometry")],
-        executor.intervals[("chunk000", "encode")],
-    )
     assert result.publication_order == ("chunk000", "chunk001", "batch000")
+
+
+def test_ready_chunks_are_not_serialized_by_resource_declarations(tmp_path):
+    executor = _ReadyStageBarrierExecutor()
+    parent, scheduler = _scheduler(tmp_path, executor)
+
+    result = scheduler.run_batch(parent, _assets(4))
+
+    assert result.max_chunks_in_flight == 2
+    assert executor.prepare_barrier.n_waiting == 0
 
 
 def test_scheduler_passes_dynamic_worker_lease_to_lease_aware_executor(tmp_path):
@@ -249,6 +257,21 @@ def test_choose_chunk_assets_uses_25_percent_scratch_headroom():
     ) == 32
 
 
+def test_runtime_chunk_override_preserves_an_existing_frozen_manifest(
+    tmp_path,
+):
+    checkpoint_root = tmp_path / "chunks" / "batch008"
+    checkpoint_root.mkdir(parents=True)
+    (checkpoint_root / "manifest.json").write_text(
+        json.dumps({"chunk_assets": 64})
+    )
+
+    assert resolve_frozen_chunk_assets(checkpoint_root, requested=32) == 64
+    assert resolve_frozen_chunk_assets(
+        tmp_path / "chunks" / "batch009", requested=32
+    ) == 32
+
+
 def test_single_chunk_reports_one_chunk_in_flight(tmp_path):
     parent = ShardContext.for_test(tmp_path / "parent", "ABO", "ABO-00000")
     assets = _assets(1)
@@ -256,7 +279,6 @@ def test_single_chunk_reports_one_chunk_in_flight(tmp_path):
     parent.instances.write_text(f"{assets[0]}\n")
     scheduler = ParallelChunkScheduler(
         config_hash="c" * 64,
-        broker=NodeResourceBroker(cpu_limit=1, gpu_count=1),
         executor=_TimelineExecutor(),
         stages=_stages(),
         checkpoint_root=tmp_path / "checkpoints",
@@ -277,7 +299,6 @@ def test_promote_chunk_outputs_renames_asset_directories_and_is_idempotent(tmp_p
     executor = _TimelineExecutor()
     scheduler = ParallelChunkScheduler(
         config_hash="c" * 64,
-        broker=NodeResourceBroker(cpu_limit=1, gpu_count=1),
         executor=executor,
         stages=_stages(),
         checkpoint_root=tmp_path / "checkpoints",
@@ -308,7 +329,6 @@ def test_chunk_context_scopes_all_shared_record_parts(tmp_path, config):
     parent.instances.write_text(f"{assets[0]}\n")
     scheduler = ParallelChunkScheduler(
         config_hash=config.config_hash(),
-        broker=NodeResourceBroker(cpu_limit=1, gpu_count=1),
         executor=_TimelineExecutor(),
         stages=_stages(),
         checkpoint_root=tmp_path / "checkpoints",
@@ -337,7 +357,6 @@ def test_chunk_record_prefix_is_unique_across_parallel_batches(tmp_path):
     parent.instances.write_text(f"{assets[0]}\n")
     scheduler = ParallelChunkScheduler(
         config_hash="c" * 64,
-        broker=NodeResourceBroker(cpu_limit=1, gpu_count=1),
         executor=_TimelineExecutor(),
         stages=_stages(),
         checkpoint_root=tmp_path / "checkpoints",
@@ -401,7 +420,6 @@ def test_legacy_chunk_checkpoint_maps_to_bundled_stages(
     )
     scheduler = ParallelChunkScheduler(
         config_hash="c" * 64,
-        broker=NodeResourceBroker(cpu_limit=1, gpu_count=1),
         executor=_TimelineExecutor(),
         stages=stages,
         checkpoint_root=tmp_path / "legacy-checkpoints",

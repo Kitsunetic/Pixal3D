@@ -4,7 +4,6 @@ from data_toolkit.pipeline.parallelism import (
     DynamicResourceBroker,
     GeometryProfile,
     GpuMemoryState,
-    NodeResourceBroker,
     WorkerSpec,
     configure_geometry_threads,
     geometry_affinity_sets,
@@ -124,60 +123,6 @@ def test_micro_batch_steps_up_only_below_seventy_percent(config):
     ) == 8
 
 
-def test_broker_never_oversubscribes_cpu_and_release_is_idempotent():
-    broker = NodeResourceBroker(cpu_limit=44, gpu_count=7)
-    first = broker.try_acquire(cpu_cores=24, gpu_indices=())
-    second = broker.try_acquire(cpu_cores=20, gpu_indices=())
-
-    assert first is not None and second is not None
-    assert broker.try_acquire(cpu_cores=1, gpu_indices=()) is None
-    second.release()
-    second.release()
-    assert broker.try_acquire(cpu_cores=1, gpu_indices=()) is not None
-
-
-def test_broker_admits_at_hard_limit_and_rejects_above_it():
-    broker = NodeResourceBroker(cpu_limit=44, gpu_count=7, gpu_hard_percent=90.0)
-
-    assert broker.try_acquire(
-        cpu_cores=0, gpu_indices=(0,), gpu_memory_percent=89.9
-    ) is not None
-    assert broker.try_acquire(
-        cpu_cores=0, gpu_indices=(1,), gpu_memory_percent=90.0
-    ) is not None
-    assert broker.try_acquire(
-        cpu_cores=0, gpu_indices=(2,), gpu_memory_percent=90.1
-    ) is None
-
-
-def test_node_broker_admits_exact_hard_limit_but_not_more():
-    broker = NodeResourceBroker(
-        cpu_limit=44,
-        gpu_count=1,
-        gpu_hard_percent=100.0,
-    )
-    render = broker.try_acquire(
-        cpu_cores=0,
-        gpu_indices=(0,),
-        gpu_memory_percent=20.0,
-    )
-    encode = broker.try_acquire(
-        cpu_cores=0,
-        gpu_indices=(0,),
-        gpu_memory_percent=80.0,
-    )
-
-    assert render is not None and encode is not None
-    assert (
-        broker.try_acquire(
-            cpu_cores=0,
-            gpu_indices=(0,),
-            gpu_memory_percent=0.1,
-        )
-        is None
-    )
-
-
 def test_dynamic_broker_admits_observed_plus_reserved_exactly_at_hard_limit():
     broker = DynamicResourceBroker()
     broker.register(
@@ -201,23 +146,6 @@ def test_dynamic_broker_admits_observed_plus_reserved_exactly_at_hard_limit():
         )
         is not None
     )
-
-
-@pytest.mark.parametrize(
-    "kwargs",
-    [
-        {"cpu_cores": True, "gpu_indices": ()},
-        {"cpu_cores": -1, "gpu_indices": ()},
-        {"cpu_cores": 0, "gpu_indices": (7,)},
-        {"cpu_cores": 0, "gpu_indices": (0, 0)},
-        {"cpu_cores": 0, "gpu_indices": (0,), "gpu_memory_percent": float("nan")},
-    ],
-)
-def test_broker_rejects_invalid_requests(kwargs):
-    broker = NodeResourceBroker(cpu_limit=44, gpu_count=7)
-
-    with pytest.raises(ValueError):
-        broker.try_acquire(**kwargs)
 
 
 def test_geometry_profile_uses_44_physical_cores(config):

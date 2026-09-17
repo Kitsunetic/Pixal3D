@@ -1,18 +1,16 @@
 from collections import deque
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta, timezone
-from enum import Enum
-import json
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 import subprocess
 import threading
 import time
-from typing import Callable
+from typing import Callable, Protocol
 
 import psutil
 
-from .config import LimitConfig, PipelineConfig
+from .config import PipelineConfig
 
 
 GIB = 1024**3
@@ -274,24 +272,6 @@ class ResourceSampler:
         )
 
 
-class ResourceAction(str, Enum):
-    RUN = "run"
-    PAUSE = "pause"
-    STOP = "stop"
-
-
-@dataclass(frozen=True)
-class ResourceDecision:
-    action: ResourceAction
-    reasons: tuple[str, ...]
-
-
-class ResourceLimitExceeded(RuntimeError):
-    def __init__(self, reasons: tuple[str, ...]):
-        super().__init__("; ".join(reasons))
-        self.reasons = reasons
-
-
 def _snapshot_payload(snapshot: ResourceSnapshot) -> dict:
     payload = asdict(snapshot)
     timestamp = snapshot.timestamp
@@ -302,273 +282,37 @@ def _snapshot_payload(snapshot: ResourceSnapshot) -> dict:
     return payload
 
 
-class TelemetryWriter:
-    def __init__(
-        self,
-        path: Path,
-        *,
-        clock: Callable[[], float] = time.monotonic,
-        sync_interval: float | timedelta = 30.0,
-    ):
-        self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._stream = self.path.open("a", encoding="utf-8")
-        self._clock = clock
-        self._sync_interval = (
-            sync_interval.total_seconds()
-            if isinstance(sync_interval, timedelta)
-            else float(sync_interval)
-        )
-        if self._sync_interval <= 0:
-            self._stream.close()
-            raise ValueError("telemetry sync interval must be positive")
-        self._last_sync = clock()
-        self._closed = False
-
-    def _sync(self) -> None:
-        self._stream.flush()
-        os.fsync(self._stream.fileno())
-        self._last_sync = self._clock()
-
+class ResourceTelemetryWriter(Protocol):
     def write(
         self,
         snapshot: ResourceSnapshot,
-        decision: ResourceDecision,
         shard_id: str,
         command: str,
-    ) -> None:
-        if self._closed:
-            raise ValueError("telemetry writer is closed")
-        payload = _snapshot_payload(snapshot)
-        payload.update(
-            shard_id=shard_id,
-            command=command,
-            action=decision.action.value,
-            reasons=decision.reasons,
-        )
-        self._stream.write(json.dumps(payload, sort_keys=True) + "\n")
-        if self._clock() - self._last_sync >= self._sync_interval:
-            self._sync()
-
-    def close(self) -> None:
-        if self._closed:
-            return
-        sync_error = None
-        close_error = None
-        try:
-            self._sync()
-        except BaseException as error:
-            sync_error = error
-        try:
-            self._stream.close()
-        except BaseException as error:
-            close_error = error
-        finally:
-            self._closed = True
-        if sync_error is not None:
-            if close_error is not None:
-                raise sync_error from close_error
-            raise sync_error
-        if close_error is not None:
-            raise close_error
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
-        try:
-            self.close()
-        except BaseException as close_error:
-            if exc_value is None:
-                raise
-            raise exc_value.with_traceback(traceback) from close_error
+    ) -> None: ...
 
 
-class ResourceGuard:
+class ResourceMonitor:
+    """Serializes passive resource samples without controlling execution."""
+
     def __init__(
         self,
         sample: Callable[[], ResourceSnapshot],
-        policy: "ResourcePolicy",
-        telemetry_writer: TelemetryWriter,
-        clock: Callable[[], float],
-        sleeper: Callable[[float], None],
-    ):
+        telemetry_writer: ResourceTelemetryWriter,
+    ) -> None:
         self.sample = sample
-        self.policy = policy
         self.telemetry_writer = telemetry_writer
-        self.clock = clock
-        self.sleeper = sleeper
         self._snapshots = deque(maxlen=60)
-        self._recovery_required = False
-        self._stable_since: float | None = None
         self._lock = threading.RLock()
 
-    def check(self, shard_id: str, command: str) -> ResourceDecision:
+    def record(self, shard_id: str, command: str) -> ResourceSnapshot:
         with self._lock:
             snapshot = self.sample()
-            decision = self.policy.evaluate(snapshot)
-            now = self.clock()
-            if decision.action == ResourceAction.RUN:
-                if self._recovery_required:
-                    if self._stable_since is None:
-                        self._stable_since = now
-                    recovery_seconds = getattr(
-                        getattr(self.policy, "limits", None),
-                        "recovery_stable_seconds",
-                        30,
-                    )
-                    if now - self._stable_since < recovery_seconds:
-                        decision = ResourceDecision(
-                            ResourceAction.PAUSE, ("resource recovery period",)
-                        )
-                    else:
-                        self._recovery_required = False
-                        self._stable_since = None
-                else:
-                    self._stable_since = None
-            else:
-                self._recovery_required = True
-                self._stable_since = None
             self._snapshots.append(snapshot)
-            self.telemetry_writer.write(snapshot, decision, shard_id, command)
-            return decision
-
-    def wait_for_admission(
-        self, shard_id: str, command: str
-    ) -> ResourceDecision:
-        while True:
-            decision = self.check(shard_id, command)
-            if decision.action == ResourceAction.STOP:
-                raise ResourceLimitExceeded(decision.reasons)
-            if decision.action == ResourceAction.RUN:
-                return decision
-            self.sleeper(5)
+            self.telemetry_writer.write(snapshot, shard_id, command)
+            return snapshot
 
     def last_five_minutes(self) -> tuple[dict, ...]:
         with self._lock:
             return tuple(
                 _snapshot_payload(snapshot) for snapshot in self._snapshots
             )
-
-
-class ResourcePolicy:
-    def __init__(
-        self,
-        limits: LimitConfig,
-        monotonic_clock: Callable[[], float] = time.monotonic,
-    ):
-        self.limits = limits
-        raw_local_free_percent = os.environ.get(
-            "PIXAL3D_LOCAL_SCRATCH_RESERVE_PERCENT"
-        )
-        if raw_local_free_percent is None:
-            self.local_free_percent = limits.local_free_percent
-        else:
-            try:
-                self.local_free_percent = int(raw_local_free_percent)
-            except ValueError as error:
-                raise ValueError(
-                    "PIXAL3D_LOCAL_SCRATCH_RESERVE_PERCENT must be an integer"
-                ) from error
-            if not 1 <= self.local_free_percent <= 100:
-                raise ValueError(
-                    "PIXAL3D_LOCAL_SCRATCH_RESERVE_PERCENT must be between 1 and 100"
-                )
-        self.monotonic_clock = monotonic_clock
-        self.first_seen: dict[str, float] = {}
-        self.swap_window: deque[tuple[float, int]] = deque()
-
-    def duration(self, key: str, active: bool, now: float) -> float:
-        if not active:
-            self.first_seen.pop(key, None)
-            return 0.0
-        self.first_seen.setdefault(key, now)
-        return now - self.first_seen[key]
-
-    def evaluate(self, value: ResourceSnapshot) -> ResourceDecision:
-        now = (
-            value.monotonic_seconds
-            if value.monotonic_seconds is not None
-            else self.monotonic_clock()
-        )
-        hard = []
-        soft = []
-        self.swap_window.append((now, max(0, value.swap_in_bytes)))
-        while self.swap_window and self.swap_window[0][0] < now - 60.0:
-            self.swap_window.popleft()
-        swap_total = sum(item[1] for item in self.swap_window)
-        swap_threshold = self.limits.swap_soft_mib_per_minute * 1024**2
-        if (
-            value.local_free_gib < self.limits.local_free_gib
-            or value.local_free_percent < self.local_free_percent
-        ):
-            hard.append("local free-space floor")
-        if value.data2_project_tib >= self.limits.data2_hard_tib:
-            hard.append("data2 hard project limit")
-        if value.data2_fs_free_tib < self.limits.data2_fs_free_tib:
-            hard.append("data2 filesystem free-space floor")
-        if value.data3_fs_free_tib < self.limits.data3_fs_free_tib:
-            hard.append("data3 filesystem free-space floor")
-        if value.available_ram_gib < self.limits.ram_hard_available_gib:
-            hard.append("RAM hard floor")
-        if (
-            value.cpu_max_temperature_celsius is not None
-            and value.cpu_max_temperature_celsius >= self.limits.cpu_temp_hard_celsius
-        ):
-            hard.append("CPU temperature hard threshold")
-        gpu_temperature = max(
-            (metric.temperature_celsius for metric in value.gpu_metrics),
-            default=None,
-        )
-        if gpu_temperature is not None and gpu_temperature >= self.limits.gpu_temp_hard_celsius:
-            hard.append("GPU temperature hard threshold")
-        if self.duration(
-            "cpu_hard", value.cpu_percent > self.limits.cpu_hard_percent, now
-        ) >= 5 * 60:
-            hard.append("CPU hard duration")
-        if self.duration(
-            "cpu_soft", value.cpu_percent > self.limits.cpu_soft_percent, now
-        ) >= 2 * 60:
-            soft.append("CPU soft duration")
-        # Linux load includes runnable work and uninterruptible kernel waits. It
-        # is useful telemetry, but by itself it does not prove CPU, memory, I/O,
-        # or thermal pressure. Those signals have their own bounded guards
-        # below, so a healthy high-load node must not be paused on load alone.
-        if self.duration(
-            "iowait", value.io_wait_percent > self.limits.io_wait_soft_percent, now
-        ) >= 2 * 60:
-            soft.append("I/O wait")
-        if value.available_ram_gib < self.limits.ram_soft_available_gib:
-            soft.append("RAM soft floor")
-        if (
-            len(self.swap_window) >= self.limits.swap_soft_samples
-            and swap_total >= swap_threshold
-        ):
-            soft.append("swap-in activity")
-        if (
-            value.cpu_max_temperature_celsius is not None
-            and self.duration(
-                "cpu_temperature",
-                value.cpu_max_temperature_celsius >= self.limits.cpu_temp_soft_celsius,
-                now,
-            )
-            >= self.limits.temperature_soft_seconds
-        ):
-            soft.append("CPU temperature soft duration")
-        if (
-            gpu_temperature is not None
-            and self.duration(
-                "gpu_temperature",
-                gpu_temperature >= self.limits.gpu_temp_soft_celsius,
-                now,
-            )
-            >= self.limits.temperature_soft_seconds
-        ):
-            soft.append("GPU temperature soft duration")
-        if (
-            value.data2_project_tib >= self.limits.data2_soft_tib
-            or value.data3_project_tib >= self.limits.data3_soft_tib
-        ):
-            soft.append("project storage soft limit")
-        action = ResourceAction.STOP if hard else ResourceAction.PAUSE if soft else ResourceAction.RUN
-        return ResourceDecision(action, tuple(hard or soft))

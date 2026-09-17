@@ -7,6 +7,7 @@ from typing import Mapping, Sequence
 
 from .config import PipelineConfig
 from .parallelism import geometry_profile
+from .runtime_profile import parallel_pipeline_runtime
 
 
 @dataclass(frozen=True)
@@ -516,6 +517,15 @@ def build_preprocessing_dag(
     renderer_mode, native_worker_max_assets = _renderer_runtime(
         context.source, runtime_gpu_count
     )
+    pipeline_runtime = parallel_pipeline_runtime(
+        cpu_limit=config.parallelism.cpu_physical_cores,
+        configured_chunk_assets=config.parallelism.chunk_assets,
+    )
+    voxel_workers = (
+        min(profile.voxel_workers, pipeline_runtime.geometry_workers)
+        if pipeline_runtime.split_prepare_bundle
+        else profile.voxel_workers
+    )
     if renderer_mode == "native":
         render_workers_per_gpu = _runtime_native_render_workers(
             config.workers.cpu_threads
@@ -542,26 +552,12 @@ def build_preprocessing_dag(
         / f"blender-{config.render.blender_version}-linux-x64"
         / "blender"
     )
-    commands: list[CommandSpec] = [
-        CommandSpec(
-            "download",
-            python_command(
-                "download.py",
-                *base,
-                "--download_root",
-                str(context.source_root),
-                "--record_root",
-                str(context.metadata_root / "download_records"),
-                "--max_workers",
-                "8",
-                "--record_prefix",
-                f"{context.shard_id}_{context.batch_id}_",
-            ),
-            CPU_ENV,
-        ),
-        CommandSpec("stage_raw", ("internal:stage_raw",)),
-        CommandSpec(
-            "prepare_bundle",
+    def prepare_command(
+        name: str, phase: str | None, dump_workers: int
+    ) -> CommandSpec:
+        phase_args = ("--phase", phase) if phase is not None else ()
+        return CommandSpec(
+            name,
             python_command(
                 "prepare_bundle.py",
                 *base,
@@ -590,7 +586,7 @@ def build_preprocessing_dag(
                 "--cycles_device",
                 config.render.cycles_device,
                 "--dump_workers",
-                str(profile.dump_workers),
+                str(dump_workers),
                 "--render_workers",
                 str(render_workers),
                 "--render_workers_per_gpu",
@@ -598,10 +594,47 @@ def build_preprocessing_dag(
                 "--gpu_count",
                 str(runtime_gpu_count),
                 *record_args,
+                *phase_args,
             ),
             RENDER_ENV,
+        )
+
+    commands: list[CommandSpec] = [
+        CommandSpec(
+            "download",
+            python_command(
+                "download.py",
+                *base,
+                "--download_root",
+                str(context.source_root),
+                "--record_root",
+                str(context.metadata_root / "download_records"),
+                "--max_workers",
+                "8",
+                "--record_prefix",
+                f"{context.shard_id}_{context.batch_id}_",
+            ),
+            CPU_ENV,
+        ),
+        CommandSpec("stage_raw", ("internal:stage_raw",)),
+        prepare_command(
+            "prepare_bundle",
+            "dump" if pipeline_runtime.split_prepare_bundle else None,
+            (
+                pipeline_runtime.prepare_cpu_cores
+                if pipeline_runtime.split_prepare_bundle
+                else profile.dump_workers
+            ),
         ),
     ]
+    if pipeline_runtime.split_prepare_bundle:
+        commands.append(
+            prepare_command(
+                "render_bundle",
+                "render",
+                pipeline_runtime.prepare_cpu_cores,
+            )
+        )
 
     ss_resolution = config.targets.ss_resolution
     resolutions = ",".join(str(value) for value in config.targets.resolutions)
@@ -637,7 +670,7 @@ def build_preprocessing_dag(
                     "--view_indices",
                     "0-1",
                     "--max_workers",
-                    str(profile.voxel_workers),
+                    str(voxel_workers),
                     "--native_threads",
                     str(profile.voxel_threads_per_worker),
                     "--loader_workers",

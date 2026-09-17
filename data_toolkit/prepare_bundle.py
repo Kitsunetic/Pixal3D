@@ -87,28 +87,44 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--render_workers_per_gpu", type=int, required=True)
     parser.add_argument("--gpu_count", type=int, required=True)
     parser.add_argument("--record_prefix", default="")
+    parser.add_argument(
+        "--phase", choices=("all", "dump", "render"), default="all"
+    )
     args = parser.parse_args(argv)
     if not read_asset_ids(Path(args.instances)):
         return 0
-    gpu_indices = _gpu_indices(min(args.gpu_count, args.render_workers))
     if args.native_worker_max_assets <= 0:
         parser.error("native worker max assets must be positive")
-    if args.renderer_mode == "native" and (
-        args.gpu_count != 1
-        or len(gpu_indices) != 1
-    ):
-        parser.error(
-            "native renderer requires exactly one visible GPU"
+    gpu_indices: tuple[int, ...] = ()
+    total_render_workers = 0
+    if args.phase in {"all", "render"}:
+        gpu_indices = _gpu_indices(min(args.gpu_count, args.render_workers))
+        if args.renderer_mode == "native" and (
+            args.gpu_count != 1
+            or len(gpu_indices) != 1
+        ):
+            parser.error("native renderer requires exactly one visible GPU")
+        requested_render_workers = (
+            len(gpu_indices) * args.render_workers_per_gpu
         )
-    requested_render_workers = len(gpu_indices) * args.render_workers_per_gpu
-    if min(args.dump_workers, requested_render_workers, args.render_workers) <= 0:
-        parser.error("worker and GPU counts must be positive")
-    try:
-        total_render_workers, dump_workers, stats_workers = _worker_budget(
-            args.dump_workers, requested_render_workers
-        )
-    except ValueError as error:
-        parser.error(str(error))
+        if min(requested_render_workers, args.render_workers) <= 0:
+            parser.error("render worker and GPU counts must be positive")
+        total_render_workers = requested_render_workers
+    if args.phase == "all":
+        try:
+            total_render_workers, dump_workers, stats_workers = _worker_budget(
+                args.dump_workers, total_render_workers
+            )
+        except ValueError as error:
+            parser.error(str(error))
+    elif args.phase == "dump":
+        if args.dump_workers < 2:
+            parser.error("dump phase requires at least two CPU workers")
+        dump_workers = max(1, args.dump_workers // 2)
+        stats_workers = args.dump_workers
+    else:
+        dump_workers = 0
+        stats_workers = 0
 
     instances = args.instances
     dataset = [args.dataset]
@@ -150,19 +166,24 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     processes: list[subprocess.Popen[bytes]] = []
     try:
-        mesh_process = subprocess.Popen(mesh)
-        processes.append(mesh_process)
-        pbr_process = subprocess.Popen(pbr)
-        processes.append(pbr_process)
+        dump_processes: tuple[subprocess.Popen[bytes], ...] = ()
+        if args.phase in {"all", "dump"}:
+            mesh_process = subprocess.Popen(mesh)
+            processes.append(mesh_process)
+            pbr_process = subprocess.Popen(pbr)
+            processes.append(pbr_process)
+            dump_processes = (mesh_process, pbr_process)
         for command, environment in renders:
             processes.append(subprocess.Popen(command, env=environment))
-        wait_until(processes, (mesh_process, pbr_process))
-        stats = _leaf("asset_stats.py", [
-            "--root", args.root, "--instances", instances,
-            "--mesh_dump_root", args.work_root, "--pbr_dump_root", args.work_root,
-            "--max_workers", str(stats_workers), *record,
-        ])
-        processes.append(subprocess.Popen(stats))
+        if dump_processes:
+            wait_until(processes, dump_processes)
+            stats = _leaf("asset_stats.py", [
+                "--root", args.root, "--instances", instances,
+                "--mesh_dump_root", args.work_root,
+                "--pbr_dump_root", args.work_root,
+                "--max_workers", str(stats_workers), *record,
+            ])
+            processes.append(subprocess.Popen(stats))
         wait_all(processes)
     except BaseException:
         terminate_and_reap(processes)

@@ -50,14 +50,11 @@ from .packing import (
     publish_pack,
     verify_pack,
 )
-from .parallelism import NodeResourceBroker
 from .registry import RegistryStore
 from .resources import (
     ResourceAccountingError,
-    ResourceAction,
-    ResourceDecision,
-    ResourceLimitExceeded,
 )
+from .runtime_profile import parallel_pipeline_runtime
 from .scheduler import (
     ChunkContext,
     Lane,
@@ -65,6 +62,7 @@ from .scheduler import (
     StageSpec,
     choose_chunk_assets,
     promote_chunk_outputs,
+    resolve_frozen_chunk_assets,
 )
 from .validation import (
     ValidationError,
@@ -532,17 +530,9 @@ class _MissingProjectAccounting:
         )
 
 
-class _MissingResourceGuard:
-    def _fail(self):
-        raise IntegrationProviderRequired(
-            "resource guard is required for mutating pipeline operations"
-        )
-
-    def wait_for_admission(self, shard_id: str, command: str):
-        self._fail()
-
-    def check(self, shard_id: str, command: str):
-        self._fail()
+class _NullResourceMonitor:
+    def record(self, shard_id: str, command: str) -> None:
+        return None
 
     def last_five_minutes(self) -> tuple[dict, ...]:
         return ()
@@ -996,7 +986,7 @@ class PipelineRunner:
     def __init__(
         self,
         config: PipelineConfig,
-        resource_guard,
+        resource_monitor,
         validators: Mapping[str, Callable[[], bool]],
         internal_handlers: Mapping[str, Callable[[], None]],
         *,
@@ -1037,7 +1027,7 @@ class PipelineRunner:
                 "process poll interval must be positive and no greater than the monitor interval"
             )
         self.config = config
-        self.resource_guard = resource_guard
+        self.resource_monitor = resource_monitor
         self.validators = validators
         self.internal_handlers = internal_handlers
         self.command_builder = command_builder or build_preprocessing_dag
@@ -1088,12 +1078,8 @@ class PipelineRunner:
         self.last_command_timings: dict[str, float] = {}
 
     def _build_commands(self, context: ShardContext) -> Sequence[CommandSpec]:
-        try:
-            recent = self.resource_guard.last_five_minutes()
-        except (OSError, RuntimeError, ValueError):
-            recent = ()
         self.worker_profile = choose_worker_profile(
-            recent, self.config, self.worker_profile
+            (), self.config
         )
         parameters = inspect.signature(self.command_builder).parameters
         if len(parameters) >= 3:
@@ -1412,29 +1398,6 @@ class PipelineRunner:
                             category=EscalationCategory.COMMAND_FAILURE,
                             exit_code=2,
                         )
-                    try:
-                        self.resource_guard.wait_for_admission(
-                            context.shard_id, command.name
-                        )
-                    except ResourceLimitExceeded as error:
-                        self.stop(
-                            context,
-                            command.name,
-                            "; ".join(error.reasons),
-                            checkpoint,
-                            category=EscalationCategory.RESOURCE,
-                            exit_code=3,
-                        )
-                    except (OSError, RuntimeError, ValueError) as error:
-                        self.stop(
-                            context,
-                            command.name,
-                            str(error) or type(error).__name__,
-                            checkpoint,
-                            category=EscalationCategory.INFRASTRUCTURE,
-                            exit_code=2,
-                        )
-
                     attempt = prior_attempts + 1
                     checkpoint.attempts[command.name] = attempt
                     checkpoint.active_attempt = {
@@ -1465,16 +1428,6 @@ class PipelineRunner:
                             raise OutputValidationError(
                                 f"validation failed: {command.name}"
                             )
-                    except ResourceLimitExceeded as error:
-                        checkpoint.active_attempt = None
-                        self.stop(
-                            context,
-                            command.name,
-                            "; ".join(error.reasons),
-                            checkpoint,
-                            category=EscalationCategory.RESOURCE,
-                            exit_code=3,
-                        )
                     except PipelineStopped:
                         raise
                     except (
@@ -1527,9 +1480,16 @@ class PipelineRunner:
                                 if persistence_error is not None
                                 else (),
                             )
-                        if command.name in {"render_cond", "prepare_bundle"}:
+                        if command.name in {
+                            "render_cond",
+                            "prepare_bundle",
+                            "render_bundle",
+                        }:
                             current_workers = command.workers_per_gpu
-                            if command.name == "prepare_bundle":
+                            if command.name in {
+                                "prepare_bundle",
+                                "render_bundle",
+                            }:
                                 option = command.argv.index(
                                     "--render_workers_per_gpu"
                                 )
@@ -1544,7 +1504,10 @@ class PipelineRunner:
                                     .render_workers_per_gpu_steps
                                 ),
                             )
-                            if command.name == "prepare_bundle":
+                            if command.name in {
+                                "prepare_bundle",
+                                "render_bundle",
+                            }:
                                 argv = list(command.argv)
                                 argv[option + 1] = str(stepped_workers)
                                 command = replace(command, argv=tuple(argv))
@@ -1629,7 +1592,25 @@ class PipelineRunner:
                     "completed command validation requested an unknown command"
                 )
             for name in requested:
-                if name not in checkpoint.completed_commands:
+                legacy_render = False
+                if name == "render_bundle":
+                    runtime = parallel_pipeline_runtime(
+                        cpu_limit=(
+                            self.config.parallelism.cpu_physical_cores
+                        ),
+                        configured_chunk_assets=(
+                            self.config.parallelism.chunk_assets
+                        ),
+                    )
+                    legacy_render = (
+                        runtime.split_prepare_bundle
+                        and "prepare_bundle"
+                        in checkpoint.completed_commands
+                    )
+                if (
+                    name not in checkpoint.completed_commands
+                    and not legacy_render
+                ):
                     return False
                 if not self._valid_output(name, read_only=True):
                     return False
@@ -1960,25 +1941,20 @@ class PipelineRunner:
             return
 
         processes = []
-        paused_groups: set[int] = set()
         try:
             for argv, additions in expanded_commands:
                 environment = dict(self.environment)
                 environment.update(dict(additions))
                 process = self.supervisor_factory(argv, environment)
                 processes.append(process)
-            self._monitor_processes(
-                processes, paused_groups, shard_id, command
-            )
+            self._monitor_processes(processes, shard_id, command)
             self._reap(processes)
             self._close_processes(processes)
         except BaseException as error:
             try:
-                self._terminate_and_reap(processes, paused_groups)
+                self._terminate_and_reap(processes)
             except BaseException as cleanup_error:
-                if isinstance(
-                    error, (ResourceLimitExceeded, ProcessGroupSafetyError)
-                ):
+                if isinstance(error, ProcessGroupSafetyError):
                     notes = list(getattr(error, "__notes__", ()))
                     notes.append(
                         "supervisor cleanup failure: "
@@ -1992,7 +1968,6 @@ class PipelineRunner:
     def _monitor_processes(
         self,
         processes,
-        paused_groups: set[int],
         shard_id: str,
         command: CommandSpec,
     ) -> None:
@@ -2017,42 +1992,9 @@ class PipelineRunner:
             now = self.monotonic_clock()
             if now >= next_resource_check:
                 try:
-                    decision = self.resource_guard.check(
-                        shard_id, command.name
-                    )
-                    if not isinstance(decision, ResourceDecision):
-                        raise TypeError(
-                            f"invalid resource decision: {decision!r}"
-                        )
-                    action = decision.action
-                    if not isinstance(action, ResourceAction):
-                        raise TypeError(
-                            f"invalid resource action: {action!r}"
-                        )
-                except ResourceLimitExceeded:
-                    raise
-                except (OSError, RuntimeError, TypeError, ValueError) as error:
-                    raise InfrastructureError(
-                        f"resource monitor failed: {error}"
-                    ) from error
-                if action == ResourceAction.STOP:
-                    raise ResourceLimitExceeded(decision.reasons)
-                if action == ResourceAction.PAUSE:
-                    for process, status in zip(processes, statuses):
-                        if (
-                            status is None
-                            and process.pid not in paused_groups
-                        ):
-                            self._signal_process(process, "pause")
-                            paused_groups.add(process.pid)
-                elif action == ResourceAction.RUN and paused_groups:
-                    for process, status in zip(processes, statuses):
-                        if (
-                            status is None
-                            and process.pid in paused_groups
-                        ):
-                            self._signal_process(process, "resume")
-                            paused_groups.discard(process.pid)
+                    self.resource_monitor.record(shard_id, command.name)
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    pass
                 next_resource_check = now + self.monitor_interval_seconds
             delay = min(
                 self.process_poll_interval_seconds,
@@ -2116,7 +2058,7 @@ class PipelineRunner:
         if failure is not None:
             raise failure
 
-    def _terminate_and_reap(self, processes, paused_groups: set[int]) -> None:
+    def _terminate_and_reap(self, processes) -> None:
         failure = None
 
         def remember(error):
@@ -2140,11 +2082,6 @@ class PipelineRunner:
 
         try:
             alive = alive_or_owned()
-            signal_all(
-                [process for process in alive if process.pid in paused_groups],
-                "resume",
-            )
-            paused_groups.clear()
             signal_all(alive, "terminate")
 
             try:
@@ -2291,7 +2228,7 @@ class PipelineRunner:
                 )
         try:
             recent_telemetry = tuple(
-                self.resource_guard.last_five_minutes()
+                self.resource_monitor.last_five_minutes()
             )
         except BaseException as error:
             recent_telemetry = ()
@@ -3099,7 +3036,7 @@ class _ParallelChunkExecutor:
             context = chunk.as_shard_context()
             service = PipelineServices(
                 parent.config,
-                resource_guard=parent.resource_guard,
+                resource_monitor=parent.resource_monitor,
                 pilot_reader=parent.pilot_reader,
                 reference_counter=parent.reference_counter,
                 project_accounting=parent.project_accounting,
@@ -3246,7 +3183,7 @@ class PipelineServices:
         self,
         config: PipelineConfig,
         *,
-        resource_guard=None,
+        resource_monitor=None,
         pilot_reader: PilotReader | None = None,
         reference_counter: RawReferenceCounter | None = None,
         project_accounting: ProjectAccounting | None = None,
@@ -3286,10 +3223,10 @@ class PipelineServices:
         )
         self._registry_frame_cache = None
         self._registry_frame_lock = threading.Lock()
-        self.resource_guard = (
-            resource_guard
-            if resource_guard is not None
-            else _MissingResourceGuard()
+        self.resource_monitor = (
+            resource_monitor
+            if resource_monitor is not None
+            else _NullResourceMonitor()
         )
         self.pilot_reader = pilot_reader or _MissingPilotReader()
         self.reference_counter = (
@@ -3395,7 +3332,7 @@ class PipelineServices:
         }
         self.runner = runner or PipelineRunner(
             config,
-            self.resource_guard,
+            self.resource_monitor,
             self.validators,
             self.internal_handlers,
             report_writer=self._write_escalation,
@@ -3404,9 +3341,20 @@ class PipelineServices:
         )
 
     def _build_parallel_scheduler(self, context: ShardContext):
+        runtime = parallel_pipeline_runtime(
+            cpu_limit=self.config.parallelism.cpu_physical_cores,
+            configured_chunk_assets=self.config.parallelism.chunk_assets,
+        )
         commands: dict[str, tuple[str, ...]] = {
-            "prepare": ("stage_raw",),
-            "render": ("prepare_bundle",),
+            "prepare": (
+                "stage_raw",
+                *(('prepare_bundle',) if runtime.split_prepare_bundle else ()),
+            ),
+            "render": (
+                ("render_bundle",)
+                if runtime.split_prepare_bundle
+                else ("prepare_bundle",)
+            ),
             "encode": (
                 "geometry_encode_bundle",
                 *(
@@ -3420,13 +3368,13 @@ class PipelineServices:
             StageSpec(
                 "prepare",
                 Lane.PREPARE,
-                cpu_cores=self.config.parallelism.cpu_physical_cores,
+                cpu_cores=runtime.prepare_cpu_cores,
             ),
             StageSpec(
                 "render",
                 Lane.RENDER,
                 dependencies=("prepare",),
-                cpu_cores=self.config.parallelism.cpu_physical_cores,
+                cpu_cores=runtime.render_cpu_cores,
                 gpu_indices=tuple(range(self.config.parallelism.gpu_count)),
                 gpu_memory_percent=20.0,
             ),
@@ -3434,7 +3382,7 @@ class PipelineServices:
                 "encode",
                 Lane.ENCODE,
                 dependencies=("render",),
-                cpu_cores=self.config.parallelism.cpu_physical_cores,
+                cpu_cores=runtime.encode_cpu_cores,
                 gpu_indices=tuple(range(self.config.parallelism.gpu_count)),
                 gpu_memory_percent=float(
                     self.config.parallelism.gpu_memory_target_percent
@@ -3476,9 +3424,18 @@ class PipelineServices:
         usable = max(0, free - reserve)
         per_chunk_budget = usable // self.config.parallelism.max_chunks_in_flight
         chunk_assets = choose_chunk_assets(
-            configured=self.config.parallelism.chunk_assets,
+            configured=runtime.chunk_assets,
             p95_scratch_bytes=p95,
             usable_bytes=per_chunk_budget,
+        )
+        checkpoint_root = (
+            self._checkpoint_path(context).parent
+            / "chunks"
+            / context.batch_id
+        )
+        chunk_assets = resolve_frozen_chunk_assets(
+            checkpoint_root,
+            requested=chunk_assets,
         )
         minimum = (p95 * chunk_assets * 5 + 3) // 4
         if minimum > per_chunk_budget:
@@ -3486,21 +3443,9 @@ class PipelineServices:
                 "local scratch budget cannot admit a 32-asset parallel chunk"
             )
 
-        checkpoint_root = (
-            self._checkpoint_path(context).parent
-            / "chunks"
-            / context.batch_id
-        )
         executor = _ParallelChunkExecutor(self, checkpoint_root, commands)
         return ParallelChunkScheduler(
             config_hash=self.config.config_hash(),
-            broker=NodeResourceBroker(
-                cpu_limit=self.config.parallelism.cpu_physical_cores,
-                gpu_count=self.config.parallelism.gpu_count,
-                gpu_hard_percent=(
-                    self.config.parallelism.gpu_memory_hard_percent
-                ),
-            ),
             executor=executor,
             stages=tuple(stages),
             checkpoint_root=checkpoint_root,
@@ -6108,30 +6053,60 @@ class PipelineServices:
                     context, attempt_key="prepare_bundle"
                 )
                 self._validate_asset_stats_stage(context)
+                runtime = parallel_pipeline_runtime(
+                    cpu_limit=self.config.parallelism.cpu_physical_cores,
+                    configured_chunk_assets=(
+                        self.config.parallelism.chunk_assets
+                    ),
+                )
+                if not runtime.split_prepare_bundle:
+                    self._validate_stage_assets(
+                        context,
+                        lambda asset: self._validate_render_output(
+                            context, asset
+                        ),
+                    )
+                return True
+            if name == "render_bundle":
                 self._validate_stage_assets(
                     context,
                     lambda asset: self._validate_render_output(context, asset),
                 )
                 return True
             if name == "geometry_encode_bundle":
-                for resolution in self.config.targets.resolutions:
-                    for command_name, directory in (
-                        (f"dual_grid_{resolution}", f"dual_grid_view_{resolution}"),
-                        (
-                            f"voxelize_pbr_{resolution}",
-                            f"pbr_voxels_view_fix_{resolution}",
-                        ),
-                    ):
-                        self._validate_stage_assets(
-                            context,
-                            lambda asset, directory=directory: [
-                                self._validate_voxel_output(
-                                    context, directory, asset, view
-                                )
-                                for view in self.config.targets.views
-                            ],
-                            command_name=command_name,
-                        )
+                checkpoint = getattr(
+                    self.runner, "active_checkpoint", None
+                )
+                voxels_were_cleaned = (
+                    checkpoint is not None
+                    and all(
+                        f"cleanup_voxels_{resolution}"
+                        in checkpoint.completed_commands
+                        for resolution in self.config.targets.resolutions
+                    )
+                )
+                if not voxels_were_cleaned:
+                    for resolution in self.config.targets.resolutions:
+                        for command_name, directory in (
+                            (
+                                f"dual_grid_{resolution}",
+                                f"dual_grid_view_{resolution}",
+                            ),
+                            (
+                                f"voxelize_pbr_{resolution}",
+                                f"pbr_voxels_view_fix_{resolution}",
+                            ),
+                        ):
+                            self._validate_stage_assets(
+                                context,
+                                lambda asset, directory=directory: [
+                                    self._validate_voxel_output(
+                                        context, directory, asset, view
+                                    )
+                                    for view in self.config.targets.views
+                                ],
+                                command_name=command_name,
+                            )
                 for resolution in self.config.targets.resolutions:
                     for command_name, directory in (
                         (
@@ -6795,7 +6770,7 @@ class PipelineServices:
         )
         benchmark = PipelineServices(
             self.config,
-            resource_guard=self.resource_guard,
+            resource_monitor=self.resource_monitor,
             pilot_reader=self.pilot_reader,
             reference_counter=self.reference_counter,
             project_accounting=self.project_accounting,
