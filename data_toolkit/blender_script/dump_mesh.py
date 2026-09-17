@@ -6,6 +6,9 @@ from mathutils import Vector, Matrix
 import numpy as np
 import pickle
 
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from bulk_extract import foreach_get_array, triangle_loop_values
+
 
 """=============== BLENDER ==============="""
 
@@ -213,14 +216,37 @@ def main(arg):
         bm.to_mesh(eval_mesh)
         bm.free()
                 
-        pack["vertices"] = np.array([
-            v.co[:] for v in eval_mesh.vertices
-        ], dtype=np.float32)   # (N, 3)
-        
-        pack["faces"] = np.array([
-            [eval_mesh.loops[i].vertex_index for i in poly.loop_indices]
-            for poly in eval_mesh.polygons
-        ], dtype=np.int32)   # (F, 3)
+        pack["vertices"] = foreach_get_array(
+            eval_mesh.vertices,
+            property_name="co",
+            item_count=len(eval_mesh.vertices),
+            item_width=3,
+            dtype=np.float32,
+        )  # (N, 3)
+        loop_vertex_indices = foreach_get_array(
+            eval_mesh.loops,
+            property_name="vertex_index",
+            item_count=len(eval_mesh.loops),
+            item_width=1,
+            dtype=np.int32,
+        )
+        polygon_loop_starts = foreach_get_array(
+            eval_mesh.polygons,
+            property_name="loop_start",
+            item_count=len(eval_mesh.polygons),
+            item_width=1,
+            dtype=np.int32,
+        )
+        polygon_loop_totals = foreach_get_array(
+            eval_mesh.polygons,
+            property_name="loop_total",
+            item_count=len(eval_mesh.polygons),
+            item_width=1,
+            dtype=np.int32,
+        )
+        pack["faces"] = triangle_loop_values(
+            loop_vertex_indices, polygon_loop_starts, polygon_loop_totals
+        )  # (F, 3)
 
         output['objects'].append(pack)
 
@@ -239,4 +265,3 @@ if __name__ == '__main__':
     args = parser.parse_args(argv)
 
     main(args)
-    

@@ -8,6 +8,8 @@ import numpy as np
 from PIL import Image, UnidentifiedImageError
 import zipfile
 
+from .stage_profiling import profile_stage
+
 
 class ValidationError(ValueError):
     pass
@@ -15,7 +17,10 @@ class ValidationError(ValueError):
 
 def _load_json(path: Path, description: str):
     try:
-        return json.loads(path.read_text())
+        with profile_stage("validation.json.file_read"):
+            payload = path.read_text()
+        with profile_stage("validation.json.parse"):
+            return json.loads(payload)
     except OSError as error:
         if error.errno not in {errno.ENOENT, errno.ENOTDIR, errno.ELOOP}:
             raise
@@ -30,8 +35,14 @@ def _load_json(path: Path, description: str):
 
 def _load_npz(path: Path, keys: tuple[str, ...], description: str):
     try:
-        with np.load(path, allow_pickle=False) as data:
-            return tuple(np.asarray(data[key]) for key in keys)
+        with profile_stage("validation.npz.open"):
+            archive = np.load(path, allow_pickle=False)
+        with archive as data:
+            arrays = []
+            for key in keys:
+                with profile_stage(f"validation.npz.materialize.{key}"):
+                    arrays.append(np.asarray(data[key]))
+            return tuple(arrays)
     except OSError as error:
         if error.errno not in {
             errno.ENOENT,
@@ -158,29 +169,45 @@ def validate_sparse_latent(
 ) -> None:
     path = Path(path)
     feats, coords = _load_npz(path, ("feats", "coords"), "sparse latent")
-    if (
-        feats.ndim != 2
-        or coords.ndim != 2
-        or coords.shape[1] != 3
-        or feats.shape[0] != coords.shape[0]
-    ):
+    with profile_stage("validation.sparse.shape"):
+        shape_is_valid = (
+            feats.ndim == 2
+            and coords.ndim == 2
+            and coords.shape[1] == 3
+            and feats.shape[0] == coords.shape[0]
+        )
+    if not shape_is_valid:
         raise ValidationError(f"shape mismatch: {path}")
-    if len(coords) > max_tokens:
+    with profile_stage("validation.sparse.token_limit"):
+        token_limit_is_valid = len(coords) <= max_tokens
+    if not token_limit_is_valid:
         raise ValidationError(f"token limit exceeded: {len(coords)}")
-    if not _is_finite(feats):
+    with profile_stage("validation.sparse.features.finite"):
+        features_are_finite = _is_finite(feats)
+    if not features_are_finite:
         raise ValidationError(f"non-finite features: {path}")
-    if not _is_finite(coords):
+    with profile_stage("validation.sparse.coordinates.finite"):
+        coordinates_are_finite = _is_finite(coords)
+    if not coordinates_are_finite:
         raise ValidationError(f"non-finite coordinates: {path}")
 
-    coordinate_dtype = coords.dtype
-    if not (
-        np.issubdtype(coordinate_dtype, np.integer)
-        or np.issubdtype(coordinate_dtype, np.floating)
-    ) or not np.equal(coords, np.trunc(coords)).all():
+    with profile_stage("validation.sparse.coordinates.integral"):
+        coordinate_dtype = coords.dtype
+        coordinates_are_integral = (
+            np.issubdtype(coordinate_dtype, np.integer)
+            or np.issubdtype(coordinate_dtype, np.floating)
+        ) and np.equal(coords, np.trunc(coords)).all()
+    if not coordinates_are_integral:
         raise ValidationError(f"coordinates must be integral: {path}")
-    if (coords < 0).any() or (coords >= grid_resolution).any():
+    with profile_stage("validation.sparse.coordinates.bounds"):
+        coordinates_are_in_bounds = not (
+            (coords < 0).any() or (coords >= grid_resolution).any()
+        )
+    if not coordinates_are_in_bounds:
         raise ValidationError(f"coordinates outside grid: {path}")
-    if len(np.unique(coords, axis=0)) != len(coords):
+    with profile_stage("validation.sparse.coordinates.unique"):
+        coordinates_are_unique = len(np.unique(coords, axis=0)) == len(coords)
+    if not coordinates_are_unique:
         raise ValidationError(f"coordinates must be unique: {path}")
 
 

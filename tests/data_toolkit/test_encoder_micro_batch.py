@@ -187,3 +187,20 @@ def test_sparse_batch_four_matches_batch_one_on_cuda_backend():
         torch.testing.assert_close(
             actual.feats, expected.feats, rtol=1e-6, atol=1e-6
         )
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_latent_coordinate_narrowing_stays_on_cuda_until_serialization():
+    from data_toolkit.pipeline.encoder_preprocessing import (
+        coordinates_to_uint8_tensor,
+    )
+
+    narrowed = coordinates_to_uint8_tensor(
+        torch.tensor([[1, 2, 3]], device="cuda", dtype=torch.int64),
+        grid_resolution=16,
+    )
+
+    assert narrowed.device.type == "cuda"
+    assert narrowed.dtype == torch.uint8
+    assert torch.equal(narrowed.cpu(), torch.tensor([[1, 2, 3]], dtype=torch.uint8))

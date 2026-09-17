@@ -137,3 +137,65 @@ def test_pbr_reuses_one_deep_copy_and_transform_across_resolutions(
     assert "error" not in result
     assert len(transform_calls) == 1
     assert grid_sizes == [256, 512, 1024]
+
+
+def test_pbr_builds_one_view_transform_for_vertices_and_normals(monkeypatch):
+    # Given: two objects whose vertices and normals share one camera frame.
+    dump = {
+        "objects": [
+            {
+                "vertices": np.array(
+                    [[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                    dtype=np.float32,
+                ),
+                "normals": np.array(
+                    [[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]],
+                    dtype=np.float32,
+                ),
+                "mat_ids": np.array([0], dtype=np.int32),
+            },
+            {
+                "vertices": np.array(
+                    [[1.0, 0.0, 0.0], [0.0, -1.0, 0.0]],
+                    dtype=np.float32,
+                ),
+                "normals": np.array(
+                    [[[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]]],
+                    dtype=np.float32,
+                ),
+                "mat_ids": np.array([0], dtype=np.int32),
+            },
+        ],
+        "materials": [{}],
+    }
+    camera_transform = np.eye(4, dtype=np.float32)
+    camera_transform[:3, 3] = [1.7, 2.3, 1.1]
+    frame = {"transform_matrix": camera_transform.tolist()}
+    expected_normals = [
+        voxelize_pbr_view.transform_normals(obj["normals"], frame)
+        for obj in dump["objects"]
+    ]
+    transform_calls = []
+    original = voxelize_pbr_view._view_transform_matrices
+
+    def track_transform(frame, device):
+        transform_calls.append((frame, device))
+        return original(frame, device)
+
+    monkeypatch.setattr(
+        voxelize_pbr_view,
+        "_view_transform_matrices",
+        track_transform,
+    )
+
+    # When: the complete PBR dump is transformed.
+    transformed, _ = voxelize_pbr_view.transform_pbr_dump(dump, frame)
+
+    # Then: matrix construction/inversion happens once and both normal arrays survive.
+    assert len(transform_calls) == 1
+    assert [obj["normals"].shape for obj in transformed["objects"]] == [
+        (1, 3, 3),
+        (1, 3, 3),
+    ]
+    for obj, expected in zip(transformed["objects"], expected_normals):
+        np.testing.assert_array_equal(obj["normals"], expected)

@@ -69,7 +69,9 @@ def _atomic_write_vxz(path, coord, attr, native_threads):
         ) as stream:
             temporary = Path(stream.name)
         o_voxel.io.write_vxz(
-            str(temporary), coord, attr, num_threads=native_threads
+            str(temporary), coord, attr,
+            num_threads=native_threads,
+            compression='zstd', compression_level=9,
         )
         info = o_voxel.io.read_vxz_info(str(temporary))
         with temporary.open('rb') as stream:

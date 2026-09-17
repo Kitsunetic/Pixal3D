@@ -16,9 +16,18 @@ else:
     from utils import parse_view_indices
 
 from data_toolkit.pipeline.atomic_io import atomic_copy, atomic_save_npz
+from data_toolkit.pipeline.encoder_preprocessing import (
+    dense_ss_batch as _dense_ss_batch,
+)
+from data_toolkit.pipeline.loader_preprocessing import load_ss_coordinates
 from data_toolkit.pipeline.sparse_batching import (
     run_encoder_tasks,
     validate_record_prefix,
+)
+from data_toolkit.pipeline.stage_profiling import (
+    profile_call,
+    profile_stage,
+    profiled_stage,
 )
 from data_toolkit.pipeline.validation import (
     validate_scale,
@@ -222,7 +231,8 @@ if __name__ == '__main__':
 
     if opt.enc_model is None:
         latent_name = f'{opt.enc_pretrained.split("/")[-1]}_{opt.resolution}'
-        encoder = models.from_pretrained(opt.enc_pretrained).eval().cuda()
+        with profile_stage("ss.model.load", "cuda"):
+            encoder = models.from_pretrained(opt.enc_pretrained).eval().cuda()
     else:
         latent_name = f'{opt.enc_model.split("/")[-1]}_{opt.ckpt}_{opt.resolution}'
         cfg = edict(json.load(open(os.path.join(opt.model_root, opt.enc_model, 'config.json'), 'r')))
@@ -307,13 +317,18 @@ if __name__ == '__main__':
         destination_scale = output_path.with_name(f'view{view_idx:02d}_scale.json')
         return output_path, source_latent, source_scale, destination_scale
 
+    @profiled_stage("ss.loader.total")
     def load(task, cancel_event):
         sha256, view_idx = task
         output_path, source_latent, source_scale, destination_scale = task_paths(task)
-        if _existing_ss_output(output_path):
+        if profile_call(
+            "ss.loader.cached_output", _existing_ss_output, output_path
+        ):
             try:
-                validate_scale(source_scale)
-                validate_scale(destination_scale)
+                profile_call("ss.loader.cached_scale", validate_scale, source_scale)
+                profile_call(
+                    "ss.loader.cached_scale", validate_scale, destination_scale
+                )
                 return None, {
                     'sha256': sha256,
                     f'ss_latent_view{view_idx:02d}_encoded': True,
@@ -323,40 +338,41 @@ if __name__ == '__main__':
                 destination_scale.unlink(missing_ok=True)
                 print(f'[Loader Repair] {sha256}/view{view_idx:02d}: {error}')
         try:
-            validate_scale(source_scale)
-            validate_sparse_latent(
+            profile_call("ss.loader.source_scale", validate_scale, source_scale)
+            profile_call(
+                "ss.loader.source_latent.validate",
+                validate_sparse_latent,
                 source_latent,
-                grid_resolution=opt.resolution,
-                max_tokens=opt.resolution**3,
+                opt.resolution,
+                opt.resolution**3,
             )
-            with np.load(source_latent, allow_pickle=False) as data:
-                coords = np.asarray(data['coords'])
         except Exception as error:
             print(f'[Loader Skip] {sha256}/view{view_idx:02d}: {error}')
             return None, None
-        coords = torch.from_numpy(coords).long()
-        ss = torch.zeros(
-            1,
-            opt.resolution,
-            opt.resolution,
-            opt.resolution,
-            dtype=torch.long,
-        )
-        ss[:, coords[:, 0], coords[:, 1], coords[:, 2]] = 1
-        return ss, None
+        return load_ss_coordinates(source_latent), None
 
+    @profiled_stage("ss.process.total")
     def process_batch(values):
-        batch = torch.stack(values, dim=0).cuda().float()
-        z = encoder(batch, sample_posterior=False)
+        batch = _dense_ss_batch(
+            values,
+            resolution=opt.resolution,
+            device=encoder.device,
+        )
+        with profile_stage("ss.encoder.forward", encoder.device):
+            z = encoder(batch, sample_posterior=False)
         torch.cuda.synchronize()
-        if not torch.isfinite(z).all():
+        with profile_stage("ss.output.split_validate", encoder.device):
+            output_is_valid = torch.isfinite(z).all()
+            outputs = list(z.split(1, dim=0))
+        if not output_is_valid:
             clear_cuda_error()
             return [
                 value if torch.isfinite(value).all() else None
-                for value in z.split(1, dim=0)
+                for value in outputs
             ]
-        return list(z.split(1, dim=0))
+        return outputs
 
+    @profiled_stage("ss.saver.total")
     def save(task, z, cancel_event):
         sha256, view_idx = task
         output_path, _, source_scale, destination_scale = task_paths(task)

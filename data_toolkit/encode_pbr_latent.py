@@ -13,7 +13,10 @@ from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
 
 import pixal3d.models as models
-import pixal3d.modules.sparse as sp
+from data_toolkit.pipeline.encoder_preprocessing import (
+    coordinates_to_uint8_tensor,
+    prepare_pbr_sparse_batch,
+)
 
 torch.set_grad_enabled(False)
 
@@ -23,6 +26,19 @@ def is_valid_sparse_tensor(tensor):
 def clear_cuda_error():
     torch.cuda.synchronize()
     torch.cuda.empty_cache()
+
+
+def _pbr_encoder_input(coords, attributes, device):
+    return prepare_pbr_sparse_batch([(coords, attributes)], device)
+
+
+def _latent_pack(z, grid_resolution):
+    coords = coordinates_to_uint8_tensor(z.coords[:, 1:], grid_resolution)
+    return {
+        'feats': z.feats.to(dtype=torch.float32).cpu().numpy(),
+        'coords': coords.cpu().numpy(),
+    }
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -64,6 +80,7 @@ if __name__ == '__main__':
         encoder.load_state_dict(torch.load(ckpt_path), strict=False)
         encoder.eval()
         print(f'Loaded model from {ckpt_path}')
+    encoder_device = next(encoder.parameters()).device
     
     os.makedirs(os.path.join(opt.pbr_latent_root, 'pbr_latents', latent_name, 'new_records'), exist_ok=True)
     
@@ -125,15 +142,12 @@ if __name__ == '__main__':
                     os.path.join(opt.pbr_voxel_root, f'pbr_voxels_{opt.resolution}', f'{sha256}.vxz'),
                     num_threads=4
                 )
-                feats = torch.concat([attr[k] for k in attrs], dim=-1) / 255.0 * 2 - 1
-                x = sp.SparseTensor(
-                    feats.float(),
-                    torch.cat([torch.zeros_like(coords[:, 0:1]), coords], dim=-1),
+                load_queue.put(
+                    (sha256, coords, tuple(attr[key] for key in attrs))
                 )
-                load_queue.put((sha256, x))
             except Exception as e:
                 print(f"[Loader Error] {sha256}: {e}")
-                load_queue.put((sha256, None))
+                load_queue.put((sha256, None, None))
 
         loader_executor.map(loader, sha256s)
         
@@ -144,19 +158,22 @@ if __name__ == '__main__':
             
         for _ in tqdm(range(len(sha256s)), desc="Extracting latents"):
             try:
-                sha256, voxels = load_queue.get()
-                if voxels is None:
+                sha256, coords, attributes = load_queue.get()
+                if coords is None or attributes is None:
                     print(f"[Skip] {sha256}: Failed to load input")
                     continue
-                
-                num_voxels = voxels.feats.shape[0]
 
-                # NaN/Inf
-                if not (is_valid_sparse_tensor(voxels)):
+                num_voxels = coords.shape[0]
+                voxels = _pbr_encoder_input(
+                    coords,
+                    attributes,
+                    encoder_device,
+                )
+                if not is_valid_sparse_tensor(voxels):
                     print(f"[Skip] {sha256}: NaN/Inf in input")
                     continue
 
-                z = encoder(voxels.cuda())
+                z = encoder(voxels)
                 torch.cuda.synchronize()
 
                 if not torch.isfinite(z.feats).all():
@@ -164,10 +181,7 @@ if __name__ == '__main__':
                     clear_cuda_error()
                     continue
 
-                pack = {
-                    'feats': z.feats.cpu().numpy().astype(np.float32),
-                    'coords': z.coords[:, 1:].cpu().numpy().astype(np.uint8),
-                }
+                pack = _latent_pack(z, opt.resolution)
                 saver_executor.submit(saver, sha256, pack)
 
             except Exception as e:

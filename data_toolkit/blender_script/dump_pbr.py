@@ -7,6 +7,13 @@ import numpy as np
 from PIL import Image
 import pickle
 
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from bulk_extract import (
+    foreach_get_array,
+    material_ids_for_polygons,
+    triangle_loop_values,
+)
+
 
 """=============== BLENDER ==============="""
 
@@ -439,31 +446,80 @@ def main(arg):
         bm.to_mesh(eval_mesh)
         bm.free()
                 
-        pack["vertices"] = np.array([
-            v.co[:] for v in eval_mesh.vertices
-        ], dtype=np.float32)   # (N, 3)
-        
-        pack["faces"] = np.array([
-            [eval_mesh.loops[i].vertex_index for i in poly.loop_indices]
-            for poly in eval_mesh.polygons
-        ], dtype=np.int32)   # (F, 3)
-        
-        pack["normals"] = np.array([
-            [eval_mesh.loops[i].normal for i in poly.loop_indices]
-            for poly in eval_mesh.polygons
-        ], dtype=np.float32)  # (F, 3, 3)
-        
-        if eval_mesh.uv_layers.active is not None:
-            pack["uvs"] = np.array([
-                [eval_mesh.uv_layers.active.data[i].uv for i in poly.loop_indices]
-                for poly in eval_mesh.polygons
-            ], dtype=np.float32)  # (F, 3, 2)
+        pack["vertices"] = foreach_get_array(
+            eval_mesh.vertices,
+            property_name="co",
+            item_count=len(eval_mesh.vertices),
+            item_width=3,
+            dtype=np.float32,
+        )  # (N, 3)
+        loop_vertex_indices = foreach_get_array(
+            eval_mesh.loops,
+            property_name="vertex_index",
+            item_count=len(eval_mesh.loops),
+            item_width=1,
+            dtype=np.int32,
+        )
+        loop_normals = foreach_get_array(
+            eval_mesh.loops,
+            property_name="normal",
+            item_count=len(eval_mesh.loops),
+            item_width=3,
+            dtype=np.float32,
+        )
+        polygon_loop_starts = foreach_get_array(
+            eval_mesh.polygons,
+            property_name="loop_start",
+            item_count=len(eval_mesh.polygons),
+            item_width=1,
+            dtype=np.int32,
+        )
+        polygon_loop_totals = foreach_get_array(
+            eval_mesh.polygons,
+            property_name="loop_total",
+            item_count=len(eval_mesh.polygons),
+            item_width=1,
+            dtype=np.int32,
+        )
+        pack["faces"] = triangle_loop_values(
+            loop_vertex_indices, polygon_loop_starts, polygon_loop_totals
+        )  # (F, 3)
+        pack["normals"] = triangle_loop_values(
+            loop_normals, polygon_loop_starts, polygon_loop_totals
+        )  # (F, 3, 3)
 
-        pack["mat_ids"] = np.array([
-            bpy.data.materials.find(obj.material_slots[poly.material_index].name)
-            if len(obj.material_slots) > 0 and obj.material_slots[poly.material_index].material is not None else -1
-            for poly in eval_mesh.polygons
-        ], dtype=np.int32)
+        if eval_mesh.uv_layers.active is not None:
+            loop_uvs = foreach_get_array(
+                eval_mesh.uv_layers.active.data,
+                property_name="uv",
+                item_count=len(eval_mesh.loops),
+                item_width=2,
+                dtype=np.float32,
+            )
+            pack["uvs"] = triangle_loop_values(
+                loop_uvs, polygon_loop_starts, polygon_loop_totals
+            )  # (F, 3, 2)
+
+        polygon_material_indices = foreach_get_array(
+            eval_mesh.polygons,
+            property_name="material_index",
+            item_count=len(eval_mesh.polygons),
+            item_width=1,
+            dtype=np.int32,
+        )
+        slot_material_ids = np.fromiter(
+            (
+                bpy.data.materials.find(slot.name)
+                if slot.material is not None
+                else -1
+                for slot in obj.material_slots
+            ),
+            dtype=np.int32,
+            count=len(obj.material_slots),
+        )
+        pack["mat_ids"] = material_ids_for_polygons(
+            polygon_material_indices, slot_material_ids
+        )
 
         output['objects'].append(pack)
 
@@ -482,4 +538,3 @@ if __name__ == '__main__':
     args = parser.parse_args(argv)
 
     main(args)
-    

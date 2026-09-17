@@ -539,9 +539,8 @@ def test_vxz_writer_uses_native_thread_bound_and_native_temp_suffix(
     worker = importlib.import_module(module_name)
     observed = {}
 
-    def fake_write(path, coord, attr, num_threads):
-        observed["path"] = Path(path)
-        observed["threads"] = num_threads
+    def fake_write(path, coord, attr, num_threads, compression, compression_level):
+        observed["write"] = (Path(path), num_threads, compression, compression_level)
         Path(path).write_bytes(b"valid-vxz")
 
     def fake_read(path):
@@ -555,9 +554,9 @@ def test_vxz_writer_uses_native_thread_bound_and_native_temp_suffix(
     info = worker._atomic_write_vxz(output, object(), {}, native_threads=5)
 
     assert info == {"num_voxel": 3}
-    assert observed["threads"] == 5
-    assert observed["path"].suffix == ".vxz"
-    assert observed["path"].parent == output.parent
+    assert observed["write"][1:] == (5, "zstd", 9)
+    assert observed["write"][0].suffix == ".vxz"
+    assert observed["write"][0].parent == output.parent
     assert output.read_bytes() == b"valid-vxz"
     assert not list(output.parent.glob(".*.vxz"))
 
@@ -573,7 +572,7 @@ def test_vxz_pair_cleanup_when_final_reopen_fails(
     output = tmp_path / "asset" / "view00.vxz"
     scale = output.with_name("view00_scale.json")
 
-    def fake_write(path, coord, attr, num_threads):
+    def fake_write(path, coord, attr, num_threads, compression, compression_level):
         Path(path).write_bytes(b"valid-vxz")
 
     def fake_read(path):

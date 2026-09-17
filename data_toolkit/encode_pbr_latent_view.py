@@ -17,11 +17,20 @@ else:
     from utils import parse_view_indices
 
 from data_toolkit.pipeline.atomic_io import atomic_copy, atomic_save_npz
+from data_toolkit.pipeline.encoder_preprocessing import (
+    coordinates_to_uint8_tensor as _coordinates_to_uint8_tensor,
+    prepare_pbr_sparse_batch as _prepare_pbr_sparse_batch,
+)
+from data_toolkit.pipeline.loader_preprocessing import load_pbr_vxz
 from data_toolkit.pipeline.sparse_batching import (
-    batch_sparse_tensors,
     run_encoder_tasks,
     split_sparse_tensor,
     validate_record_prefix,
+)
+from data_toolkit.pipeline.stage_profiling import (
+    profile_call,
+    profile_stage,
+    profiled_stage,
 )
 from data_toolkit.pipeline.validation import (
     validate_scale,
@@ -29,13 +38,9 @@ from data_toolkit.pipeline.validation import (
 )
 from data_toolkit.pipeline.geometry_wait import wait_for_geometry
 from data_toolkit.pipeline.rank_partition import interleaved_rank_indices
-from data_toolkit.encode_shape_latent_view import (
-    _coordinates_to_uint8,
-    _run_bounded_pipeline,
-)
+from data_toolkit.encode_shape_latent_view import _run_bounded_pipeline
 
 import pixal3d.models as models
-import pixal3d.modules.sparse as sp
 
 torch.set_grad_enabled(False)
 
@@ -160,9 +165,8 @@ def _encode_sparse_output(
     z = encode()
     if not torch.isfinite(z.feats).all() or not torch.isfinite(z.coords).all():
         raise ValueError('encoder produced a non-finite sparse latent')
-    feature_dtype = np.float16 if latent_dtype == 'float16' else np.float32
-    raw_coords = z.coords[:, 1:].cpu().numpy()
-    coords = _coordinates_to_uint8(raw_coords, grid_resolution)
+    feature_dtype = torch.float16 if latent_dtype == 'float16' else torch.float32
+    coords = _coordinates_to_uint8_tensor(z.coords[:, 1:], grid_resolution)
     copied_scale = False
     try:
         if scale_destination.exists():
@@ -178,8 +182,8 @@ def _encode_sparse_output(
             raise TimeoutError('saver cancelled before latent publication')
         _publish_sparse_latent(
             path,
-            feats=z.feats.cpu().numpy().astype(feature_dtype),
-            coords=coords,
+            feats=z.feats.to(dtype=feature_dtype).cpu().numpy(),
+            coords=coords.cpu().numpy(),
             grid_resolution=grid_resolution,
         )
         if cancel_event is not None and cancel_event.is_set():
@@ -252,7 +256,8 @@ if __name__ == '__main__':
 
     if opt.enc_model is None:
         latent_name = f'{opt.enc_pretrained.split("/")[-1]}_{opt.resolution}'
-        encoder = models.from_pretrained(opt.enc_pretrained).eval().cuda()
+        with profile_stage("pbr.model.load", "cuda"):
+            encoder = models.from_pretrained(opt.enc_pretrained).eval().cuda()
     else:
         latent_name = f'{opt.enc_model.split("/")[-1]}_{opt.ckpt}_{opt.resolution}'
         cfg = edict(json.load(open(os.path.join(opt.model_root, opt.enc_model, 'config.json'), 'r')))
@@ -333,15 +338,31 @@ if __name__ == '__main__':
         vxz_path = Path(opt.pbr_voxel_root) / f'pbr_voxels_view_fix_{opt.resolution}' / sha256 / f'view{view_idx:02d}.vxz'
         return output_path, source_scale, destination_scale, vxz_path
 
+    @profiled_stage("pbr.loader.total")
     def load(task, cancel_event):
         sha256, view_idx = task
         output_path, source_scale, destination_scale, vxz_path = task_paths(task)
-        wait_for_geometry(vxz_path, source_scale, cancel_event)
-        num_tokens = _existing_sparse_tokens(output_path, opt.resolution)
+        profile_call(
+            "pbr.loader.wait_geometry",
+            wait_for_geometry,
+            vxz_path,
+            source_scale,
+            cancel_event,
+        )
+        num_tokens = profile_call(
+            "pbr.loader.cached_output",
+            _existing_sparse_tokens,
+            output_path,
+            opt.resolution,
+        )
         if num_tokens is not None:
             try:
-                validate_scale(source_scale)
-                validate_scale(destination_scale)
+                profile_call(
+                    "pbr.loader.cached_scale", validate_scale, source_scale
+                )
+                profile_call(
+                    "pbr.loader.cached_scale", validate_scale, destination_scale
+                )
                 return None, {
                     'sha256': sha256,
                     f'pbr_latent_view{view_idx:02d}_encoded': True,
@@ -352,30 +373,32 @@ if __name__ == '__main__':
                 destination_scale.unlink(missing_ok=True)
                 print(f'[Loader Repair] {sha256}/view{view_idx:02d}: {error}')
         try:
-            validate_scale(source_scale)
+            profile_call("pbr.loader.source_scale", validate_scale, source_scale)
         except Exception as error:
             print(f'[Loader Skip] {sha256}/view{view_idx:02d}: {error}')
             return None, None
-        if not vxz_path.exists():
+        if not profile_call("pbr.loader.vxz.exists", vxz_path.exists):
             print(f'[Loader Skip] {sha256}/view{view_idx:02d}: vxz file not found')
             return None, None
-        attrs = ['base_color', 'metallic', 'roughness', 'alpha']
-        coords, attr = o_voxel.io.read_vxz(str(vxz_path), num_threads=1)
-        feats = torch.concat([attr[key] for key in attrs], dim=-1) / 255.0 * 2 - 1
-        voxels = sp.SparseTensor(
-            feats.float(),
-            torch.cat([torch.zeros_like(coords[:, 0:1]), coords], dim=-1),
-        )
-        if not is_valid_sparse_tensor(voxels):
-            print(f'[Loader Skip] {sha256}/view{view_idx:02d}: NaN/Inf in input')
-            return None, None
-        return voxels, None
+        return load_pbr_vxz(vxz_path, o_voxel.io.read_vxz), None
 
-    def process_batch(voxels):
-        z = encoder(batch_sparse_tensors(voxels).cuda())
+    @profiled_stage("pbr.process.total")
+    def process_batch(payloads):
+        voxels = _prepare_pbr_sparse_batch(payloads, encoder.device)
+        with profile_stage("pbr.input.validate", encoder.device):
+            inputs_are_valid = is_valid_sparse_tensor(voxels)
+        if not inputs_are_valid:
+            print('NaN/Inf in PBR encoder input')
+            return [None] * len(voxels)
+        with profile_stage("pbr.encoder.forward", encoder.device):
+            z = encoder(voxels)
         torch.cuda.synchronize()
-        outputs = split_sparse_tensor(z)
-        if any(not torch.isfinite(output.feats).all() for output in outputs):
+        with profile_stage("pbr.output.split_validate", encoder.device):
+            outputs = split_sparse_tensor(z)
+            outputs_are_valid = all(
+                torch.isfinite(output.feats).all() for output in outputs
+            )
+        if not outputs_are_valid:
             clear_cuda_error()
             return [
                 output if torch.isfinite(output.feats).all() else None
@@ -383,6 +406,7 @@ if __name__ == '__main__':
             ]
         return outputs
 
+    @profiled_stage("pbr.saver.total")
     def save(task, z, cancel_event):
         sha256, view_idx = task
         output_path, source_scale, destination_scale, _ = task_paths(task)

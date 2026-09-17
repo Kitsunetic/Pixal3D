@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from queue import Queue
 
 import pixal3d.models as models
+from data_toolkit.pipeline.encoder_preprocessing import dense_ss_batch
 
 torch.set_grad_enabled(False)
 
@@ -21,6 +22,15 @@ def is_valid_sparse_tensor(tensor):
 def clear_cuda_error():
     torch.cuda.synchronize()
     torch.cuda.empty_cache()
+
+
+def _dense_ss_volume(coordinates, resolution, device):
+    return dense_ss_batch(
+        [coordinates],
+        resolution,
+        device,
+    )
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -117,9 +127,7 @@ if __name__ == '__main__':
                 coords = np.load(os.path.join(opt.shape_latent_root, 'shape_latents', opt.shape_latent_name, f'{sha256}.npz'))['coords']
                 assert np.all(coords < opt.resolution), f"{sha256}: Invalid coords"
                 coords = torch.from_numpy(coords).long()
-                ss = torch.zeros(1, opt.resolution, opt.resolution, opt.resolution, dtype=torch.long)
-                ss[:, coords[:, 0], coords[:, 1], coords[:, 2]] = 1
-                load_queue.put((sha256, ss))
+                load_queue.put((sha256, coords))
             except Exception as e:
                 print(f"[Loader Error] {sha256}: {e}")
                 load_queue.put((sha256, None))
@@ -133,12 +141,16 @@ if __name__ == '__main__':
             
         for _ in tqdm(range(len(sha256s)), desc="Extracting latents"):
             try:
-                sha256, ss = load_queue.get()
-                if ss is None:
+                sha256, coords = load_queue.get()
+                if coords is None:
                     print(f"[Skip] {sha256}: Failed to load input")
                     continue
                 
-                ss = ss.cuda()[None].float()
+                ss = _dense_ss_volume(
+                    coords,
+                    resolution=opt.resolution,
+                    device=encoder.device,
+                )
                 z = encoder(ss, sample_posterior=False)
                 torch.cuda.synchronize()
 

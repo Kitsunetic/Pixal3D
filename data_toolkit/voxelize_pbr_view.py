@@ -71,7 +71,9 @@ def _atomic_write_vxz(path, coord, attr, native_threads):
         ) as stream:
             temporary = Path(stream.name)
         o_voxel.io.write_vxz(
-            str(temporary), coord, attr, num_threads=native_threads
+            str(temporary), coord, attr,
+            num_threads=native_threads,
+            compression='zstd', compression_level=9,
         )
         info = o_voxel.io.read_vxz_info(str(temporary))
         with temporary.open('rb') as stream:
@@ -414,6 +416,56 @@ def _run_foreach_bounded(
 
 # ==================== PBR-specific transform functions ====================
 
+def _view_transform_matrices(frame, device):
+    c2w_orig = torch.tensor(
+        frame['transform_matrix'],
+        dtype=torch.float32,
+        device=device,
+    )
+    radius = c2w_orig[:3, 3].norm().item()
+    c2w_new = get_new_camera_matrix(
+        radius=radius,
+        yaw=-90 / 180.0 * math.pi,
+        pitch=0.0,
+        dtype=torch.float32,
+        device=device,
+    )
+    w2c_orig = torch.inverse(c2w_orig)
+    R_init = torch.tensor([
+        [1.0, 0.0,  0.0, 0.0],
+        [0.0, 0.0, -1.0, 0.0],
+        [0.0, 1.0,  0.0, 0.0],
+        [0.0, 0.0,  0.0, 1.0]
+    ], dtype=torch.float32, device=device)
+    R_back = torch.tensor([
+        [1.0,  0.0, 0.0, 0.0],
+        [0.0,  0.0, 1.0, 0.0],
+        [0.0, -1.0, 0.0, 0.0],
+        [0.0,  0.0, 0.0, 1.0]
+    ], dtype=torch.float32, device=device)
+    R_ply = torch.tensor([
+        [1.0,  0.0, 0.0, 0.0],
+        [0.0,  0.0, 1.0, 0.0],
+        [0.0, -1.0, 0.0, 0.0],
+        [0.0,  0.0, 0.0, 1.0]
+    ], dtype=torch.float32, device=device)
+    vertex_transform = R_back @ c2w_new @ w2c_orig @ R_ply @ R_init
+    return vertex_transform, vertex_transform[:3, :3]
+
+
+def _transform_vertices_with_matrix(vertices, transform):
+    vertices = vertices.reshape(-1, 3)
+    verts_h = torch.cat([
+        vertices,
+        torch.ones(
+            (vertices.shape[0], 1),
+            dtype=vertices.dtype,
+            device=vertices.device,
+        ),
+    ], dim=1)
+    return (transform @ verts_h.T).T[:, :3]
+
+
 def transform_vertices(vertices, frame):
     """
     Apply multi-view transform to vertices based on camera transform matrix.
@@ -425,46 +477,16 @@ def transform_vertices(vertices, frame):
     Returns:
         transformed_vertices: torch.Tensor, shape [N, 3]
     """
-    device = vertices.device
-    c2w_orig = torch.tensor(frame['transform_matrix'], dtype=torch.float32, device=device)
+    transform, _ = _view_transform_matrices(frame, vertices.device)
+    return _transform_vertices_with_matrix(vertices, transform)
 
-    # Old and new camera matrices
-    radius = c2w_orig[:3, 3].norm().item()
-    c2w_new = get_new_camera_matrix(radius=radius, yaw=-90/180.0*math.pi, pitch=0.0,
-                                dtype=torch.float32, device=device)
-    w2c_orig = torch.inverse(c2w_orig)
 
-    # Initial and final axis alignment matrices
-    R_init = torch.tensor([
-        [1.0, 0.0,  0.0, 0.0],
-        [0.0, 0.0, -1.0, 0.0],
-        [0.0, 1.0,  0.0, 0.0],
-        [0.0, 0.0,  0.0, 1.0]
-    ], dtype=torch.float32, device=device)
-
-    R_back = torch.tensor([
-        [1.0,  0.0, 0.0, 0.0],
-        [0.0,  0.0, 1.0, 0.0],
-        [0.0, -1.0, 0.0, 0.0],
-        [0.0,  0.0, 0.0, 1.0]
-    ], dtype=torch.float32, device=device)
-
-    R_ply = torch.tensor([
-        [1.0,  0.0, 0.0, 0.0],
-        [0.0,  0.0, 1.0, 0.0],
-        [0.0, -1.0, 0.0, 0.0],
-        [0.0,  0.0, 0.0, 1.0]
-    ], dtype=torch.float32, device=device)
-
-    T_cam = c2w_new @ w2c_orig @ R_ply
-    T_final = R_back @ T_cam @ R_init
-
-    # Apply transform
-    vertices = vertices.reshape(-1, 3)
-    verts_h = torch.cat([vertices, torch.ones((vertices.shape[0], 1), dtype=torch.float32, device=device)], dim=1)
-    verts_trans = (T_final @ verts_h.T).T[:, :3]
-
-    return verts_trans
+def _transform_normals_with_matrix(normals, transform):
+    original_shape = normals.shape
+    normals_flat = normals.reshape(-1, 3)
+    normals_trans = torch.matmul(normals_flat, transform.T)
+    normals_trans = torch.nn.functional.normalize(normals_trans, dim=-1)
+    return normals_trans.reshape(original_shape)
 
 
 def transform_normals(normals, frame):
@@ -483,58 +505,8 @@ def transform_normals(normals, frame):
     if is_numpy:
         normals = torch.from_numpy(normals).float()
 
-    device = normals.device
-    original_shape = normals.shape
-
-    # Flatten to [N, 3] for processing
-    if len(original_shape) == 3:
-        normals_flat = normals.reshape(-1, 3)
-    else:
-        normals_flat = normals
-
-    c2w_orig = torch.tensor(frame['transform_matrix'], dtype=torch.float32, device=device)
-
-    # Old and new camera matrices
-    radius = c2w_orig[:3, 3].norm().item()
-    c2w_new = get_new_camera_matrix(radius=radius, yaw=-90/180.0*math.pi, pitch=0.0,
-                                dtype=torch.float32, device=device)
-    w2c_orig = torch.inverse(c2w_orig)
-
-    # Axis alignment matrices (rotation part only, 3x3)
-    R_init = torch.tensor([
-        [1.0, 0.0,  0.0],
-        [0.0, 0.0, -1.0],
-        [0.0, 1.0,  0.0]
-    ], dtype=torch.float32, device=device)
-
-    R_back = torch.tensor([
-        [1.0,  0.0, 0.0],
-        [0.0,  0.0, 1.0],
-        [0.0, -1.0, 0.0]
-    ], dtype=torch.float32, device=device)
-
-    R_ply = torch.tensor([
-        [1.0,  0.0, 0.0],
-        [0.0,  0.0, 1.0],
-        [0.0, -1.0, 0.0]
-    ], dtype=torch.float32, device=device)
-
-    # Use rotation part only
-    T_cam_rot = c2w_new[:3, :3] @ w2c_orig[:3, :3] @ R_ply
-    T_final_rot = R_back @ T_cam_rot @ R_init
-
-    # Apply rotation transform
-    normals_trans = torch.matmul(normals_flat, T_final_rot.T)
-
-    # Re-normalize
-    normals_trans = torch.nn.functional.normalize(normals_trans, dim=-1)
-
-    # Restore original shape
-    if len(original_shape) == 3:
-        normals_trans = normals_trans.reshape(original_shape)
-
-    # Always return numpy array for dump compatibility
-    return normals_trans.numpy()
+    _, transform = _view_transform_matrices(frame, normals.device)
+    return _transform_normals_with_matrix(normals, transform).numpy()
 
 
 def prepare_pbr_dump(dump):
@@ -615,8 +587,15 @@ def transform_pbr_dump(dump, frame):
     # 2. Sphere normalize all vertices together
     all_vertices_sphere, sphere_center, sphere_radius = sphere_normalize_torch(all_vertices_tensor)
 
-    # 3. Multi-view transform
-    all_transformed = transform_vertices(all_vertices_sphere, frame)
+    # 3. Build the view transform once, then reuse it for vertices and normals.
+    vertex_transform, normal_transform = _view_transform_matrices(
+        frame,
+        all_vertices_sphere.device,
+    )
+    all_transformed = _transform_vertices_with_matrix(
+        all_vertices_sphere,
+        vertex_transform,
+    )
 
     # 4. Normalize back to [-0.5, 0.5]^3 (all vertices together)
     abs_max = all_transformed.abs().max().item()
@@ -626,6 +605,23 @@ def transform_pbr_dump(dump, frame):
     # Compute total scale (from original mesh to final normalized mesh)
     total_scale = box_scale_final / sphere_radius.item()
 
+    normal_arrays = []
+    normal_entries = []
+    for index, obj in enumerate(transformed_dump['objects']):
+        normals = obj['normals']
+        if normals is not None and normals.size > 0:
+            normal_arrays.append(normals.reshape(-1, 3))
+            normal_entries.append((index, normals.shape, normals.size // 3))
+    transformed_normals = None
+    if normal_arrays:
+        normals = torch.from_numpy(
+            np.concatenate(normal_arrays, axis=0)
+        ).float()
+        transformed_normals = _transform_normals_with_matrix(
+            normals,
+            normal_transform,
+        ).numpy()
+
     # 5. Split back to individual objects
     start_idx = 0
     for i, obj in enumerate(transformed_dump['objects']):
@@ -633,16 +629,20 @@ def transform_pbr_dump(dump, frame):
         obj['vertices'] = all_transformed_normalized[start_idx:end_idx].numpy()
         start_idx = end_idx
 
-        # Transform normals
-        if obj['normals'] is not None and obj['normals'].size > 0:
-            obj['normals'] = transform_normals(obj['normals'], frame)
-
         # Fix mat_ids (replace -1 with default material index)
         obj['mat_ids'][obj['mat_ids'] == -1] = len(transformed_dump['materials']) - 1
 
         # Validate range
         assert np.all(obj['mat_ids'] >= 0), 'invalid mat_ids'
         assert np.all(obj['vertices'] >= -0.5) and np.all(obj['vertices'] <= 0.5), 'vertices out of range'
+
+    normal_start = 0
+    for index, shape, count in normal_entries:
+        normal_end = normal_start + count
+        transformed_dump['objects'][index]['normals'] = transformed_normals[
+            normal_start:normal_end
+        ].reshape(shape)
+        normal_start = normal_end
 
     return transformed_dump, total_scale
 
