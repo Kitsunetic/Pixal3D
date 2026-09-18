@@ -11,15 +11,13 @@ paths:
   existing_prepared_root: /root/data2/pixal3d/prepared
   work_root: /root/node17/data/pixal3d/preprocess_v2
   prepared_root: /root/data2/pixal3d/prepared-v2
-  scratch_root: /dev/shm/tmp
 
 # 기존 container의 내려받은 direct GLB tree를 쓴다.
 raw:
   mode: direct_glb
   root: /root/data2/pixal3d/raw/ObjaverseXL_sketchfab/raw/hf-objaverse-v1
-  glb_root: glbs
-  object_path_index: null
-  archive_binary: /usr/bin/7z
+  glb_roots:
+    - glbs
 
 stages:
   dump: {}

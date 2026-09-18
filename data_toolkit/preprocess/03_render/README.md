@@ -1,6 +1,7 @@
 # 03_render
 
-원본 GLB를 embedded `bpy`/Cycles/OPTIX로 조건 뷰 8장으로 렌더링한다. `--world-size`,
+압축 해제된 원본 direct GLB를 embedded `bpy`/Cycles/OPTIX로 조건 뷰 8장으로 렌더링한다. 7z를
+호출하지 않는다. `--world-size`,
 `--rank`와 CUDA device 하나가 필수다.
 
 ```bash

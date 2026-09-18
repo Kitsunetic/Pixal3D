@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
-"""01_manifest: control batch을 direct GLB 또는 7z archive member로 고정한다."""
+"""01_manifest: control batch을 압축 해제된 direct GLB 경로로 고정한다."""
 
 from __future__ import annotations
 
 import argparse
 import csv
 import fcntl
-import gzip
-import json
 import os
 from pathlib import Path
 import re
@@ -48,12 +46,16 @@ def default_index_path(work_root: Path) -> Path:
     return work_root.parents[1] / "_index" / "asset_index.sqlite"
 
 
-def direct_paths(raw_root: Path, glb_root: str) -> dict[str, Path]:
+def direct_paths(raw_root: Path, glb_roots: list[str]) -> dict[str, Path]:
     result: dict[str, Path] = {}
-    for path in (raw_root / glb_root).rglob("*.glb"):
-        if path.stem in result:
-            raise RuntimeError(f"중복 object id가 있습니다: {path.stem}")
-        result[path.stem] = path
+    for glb_root in glb_roots:
+        root = raw_root / glb_root
+        if not root.is_dir():
+            raise FileNotFoundError(f"direct GLB root를 찾을 수 없습니다: {root}")
+        for path in root.rglob("*.glb"):
+            if path.stem in result:
+                raise RuntimeError(f"중복 object id가 있습니다: {path.stem}")
+            result[path.stem] = path
     return result
 
 
@@ -63,15 +65,11 @@ def build_index(
     raw: dict,
 ) -> int:
     raw_root = Path(raw["root"])
-    glb_root = str(raw["glb_root"])
+    glb_roots = [str(item) for item in raw["glb_roots"]]
     mode = raw["mode"]
-    direct = direct_paths(raw_root, glb_root)
-    object_paths: dict[str, str] = {}
-    if mode == "archive_7z":
-        with gzip.open(Path(raw["object_path_index"]), "rt", encoding="utf-8") as stream:
-            object_paths = json.load(stream)
-    elif mode != "direct_glb":
-        raise ValueError(f"unsupported raw mode: {mode}")
+    if mode != "direct_glb":
+        raise ValueError(f"unsupported raw mode: {mode}; direct_glb만 지원합니다")
+    direct = direct_paths(raw_root, glb_roots)
 
     index_path.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
@@ -83,30 +81,17 @@ def build_index(
         connection = sqlite3.connect(temporary)
         try:
             connection.execute(
-                "CREATE TABLE asset_index (asset_id TEXT PRIMARY KEY, object_id TEXT NOT NULL, raw_kind TEXT NOT NULL, raw_path TEXT, archive_path TEXT, archive_member TEXT)"
+                "CREATE TABLE asset_index (asset_id TEXT PRIMARY KEY, object_id TEXT NOT NULL, raw_kind TEXT NOT NULL, raw_path TEXT NOT NULL)"
             )
-            rows: list[tuple[str, str, str, str | None, str | None, str | None]] = []
+            rows: list[tuple[str, str, str, str]] = []
             with metadata_csv.open(encoding="utf-8", newline="") as stream:
                 for record in csv.DictReader(stream):
                     object_id = object_id_from_identifier(record["file_identifier"])
                     direct_path = direct.get(object_id)
                     if direct_path is not None:
-                        rows.append((record["sha256"], object_id, "direct", str(direct_path.resolve()), None, None))
-                        continue
-                    if mode != "archive_7z":
-                        continue
-                    relative = object_paths.get(object_id)
-                    if relative is None:
-                        continue
-                    member_path = Path(relative)
-                    archive_path = raw_root / glb_root / f"{member_path.parent.name}.7z"
-                    if archive_path.is_file():
-                        rows.append((
-                            record["sha256"], object_id, "archive_7z", None,
-                            str(archive_path.resolve()), member_path.relative_to(glb_root).as_posix(),
-                        ))
+                        rows.append((record["sha256"], object_id, "direct", str(direct_path.resolve())))
             connection.executemany(
-                "INSERT INTO asset_index(asset_id, object_id, raw_kind, raw_path, archive_path, archive_member) VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO asset_index(asset_id, object_id, raw_kind, raw_path) VALUES (?, ?, ?, ?)",
                 rows,
             )
             connection.commit()
@@ -120,6 +105,16 @@ def build_index(
             temporary.unlink(missing_ok=True)
 
 
+def index_uses_direct_glbs(index_path: Path) -> bool:
+    connection = sqlite3.connect(f"file:{index_path}?mode=ro", uri=True)
+    try:
+        return connection.execute(
+            "SELECT COUNT(*) FROM asset_index WHERE raw_kind != 'direct'"
+        ).fetchone()[0] == 0
+    finally:
+        connection.close()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     add_config_argument(parser)
@@ -129,6 +124,11 @@ def main() -> int:
     parser.add_argument("--metadata-csv", type=Path, default=None)
     parser.add_argument("--index-path", type=Path, default=None)
     parser.add_argument("--build-index", action="store_true")
+    parser.add_argument(
+        "--rebuild-index",
+        action="store_true",
+        help="기존 index를 현재 direct GLB 설정으로 다시 생성합니다.",
+    )
     parser.add_argument("--hash-input", action="store_true")
     arguments = parser.parse_args()
     config, config_path = load_config(arguments.config)
@@ -140,18 +140,23 @@ def main() -> int:
     metadata_csv = arguments.metadata_csv or control_root / "metadata" / arguments.source / "metadata.csv"
     index_path = (arguments.index_path or default_index_path(work_root)).resolve()
     raw = dict(config_get(config, "raw"))
-    if arguments.build_index:
+    if arguments.build_index or arguments.rebuild_index:
         lock_path = index_path.with_name(f".{index_path.name}.lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("w") as lock_stream:
             fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX)
-            if index_path.is_file():
+            if index_path.is_file() and not arguments.rebuild_index:
                 print(f"using existing index: {index_path}")
             else:
                 indexed = build_index(index_path, metadata_csv, raw)
                 print(f"indexed {indexed} assets: {index_path}")
     if not index_path.is_file():
         parser.error(f"asset index가 없습니다. 한 번 --build-index로 실행하세요: {index_path}")
+    if not index_uses_direct_glbs(index_path):
+        parser.error(
+            "기존 index에 archive_7z record가 남아 있습니다. "
+            "압축 해제 완료 후 --rebuild-index로 다시 생성하세요."
+        )
 
     output = stage_root(work_root, "01", "manifest")
     skip_reason = completed_batch_reason(config, arguments.source, arguments.shard, arguments.batch)
@@ -173,7 +178,7 @@ def main() -> int:
     try:
         resolved = {
             asset_id: row for asset_id in asset_ids if (row := connection.execute(
-                "SELECT object_id, raw_kind, raw_path, archive_path, archive_member FROM asset_index WHERE asset_id = ?", (asset_id,)
+                "SELECT object_id, raw_kind, raw_path FROM asset_index WHERE asset_id = ?", (asset_id,)
             ).fetchone()) is not None
         }
     finally:
@@ -184,10 +189,10 @@ def main() -> int:
         if row is None:
             records.append({"asset_id": asset_id, "status": "error", "error": "configured raw source에 asset이 없습니다"})
             continue
-        object_id, raw_kind, raw_path, archive_path, archive_member = row
+        object_id, raw_kind, raw_path = row
         record = {
             "asset_id": asset_id, "object_id": object_id, "raw_kind": raw_kind,
-            "raw_path": raw_path, "archive_path": archive_path, "archive_member": archive_member,
+            "raw_path": raw_path,
             "status": "ok",
         }
         if arguments.hash_input and raw_kind == "direct":

@@ -9,7 +9,7 @@ batch_index % world_size == rank
 
 기본 stage 목록은 `01,02,03,04,05,06`이다. 각 stage script는 한 batch씩 종료하고, 이 launcher는
 같은 batch에 대해 그 script들을 순서대로 호출할 뿐 queue/scheduler를 만들지 않는다. 모든 중간 파일은
-worker node의 local `./data/preprocess_v2`에 남는다.
+NS3 shared `work_root`에 남는다.
 
 ```bash
 CUDA_VISIBLE_DEVICES=5 /home/rvi/conda/envs/torch/bin/python \
@@ -25,5 +25,5 @@ CPU-only 01/02만 수행하려면 다음처럼 명시한다.
 ```
 
 동일한 `(world_size, rank)`는 한 번만 실행해야 한다. world size를 바꾼 재실행은 legacy `prepared`와
-completion marker가 있는 prepared-v2 batch를 자동으로 건너뛰며, 미완료 batch는 새 node-local 경로에서
-재생성한다.
+completion marker가 있는 NS3 prepared-v2 batch를 자동으로 건너뛰며, shared work root의 완료된
+stage 결과를 재사용한다.

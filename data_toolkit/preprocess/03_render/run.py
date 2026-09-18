@@ -21,9 +21,9 @@ from data_toolkit.preprocess._common.runtime import (
     apply_batch_defaults,
     atomic_write_jsonl,
     config_get,
+    direct_glb_path,
     load_config,
     completed_batch_reason,
-    materialize_glb,
     read_jsonl,
     resolve_work_root,
     require_batch_ownership,
@@ -68,8 +68,6 @@ def main() -> int:
     from data_toolkit.pipeline.camera import build_condition_views
     from data_toolkit.pipeline.config import RenderConfig
 
-    scratch_root = Path(config_get(config, "paths", "scratch_root"))
-    archive_binary = str(config_get(config, "raw", "archive_binary"))
     manifest = arguments.manifest or stage_root(work_root, "02", "dump") / "manifest.jsonl"
     render_root = output / "renders_cond"
     camera_config = RenderConfig(
@@ -95,17 +93,17 @@ def main() -> int:
                 temporary = render_root / f".{asset_id}.tmp"
                 shutil.rmtree(temporary, ignore_errors=True)
                 temporary.mkdir(parents=True, exist_ok=False)
-                with materialize_glb(record, scratch_root, archive_binary) as object_path:
-                    render_cond.main(
-                        SimpleNamespace(
+                object_path = direct_glb_path(record)
+                render_cond.main(
+                    SimpleNamespace(
                         object=str(object_path),
                         cond_views=json.dumps(build_condition_views(asset_id, camera_config)),
                         cond_output_folder=str(temporary), cond_resolution=resolution,
                         boundary_fit_resolution=min(128, resolution),
                         boundary_fit_engine="CYCLES", boundary_fit_samples=1,
                         seed=seed, engine="CYCLES", cycles_device="OPTIX",
-                        )
                     )
+                )
                 if not (temporary / "transforms.json").is_file():
                     raise RuntimeError("renderer did not create transforms.json")
                 final_dir.parent.mkdir(parents=True, exist_ok=True)

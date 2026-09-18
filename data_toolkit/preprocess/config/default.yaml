@@ -8,16 +8,17 @@ batch:
 paths:
   control_root: /home/rvi/ns2/youngwoo/pixal3d/control
   existing_prepared_root: /home/rvi/ns2/youngwoo/pixal3d/prepared
-  work_root: data/preprocess_v2
-  prepared_root: /home/rvi/ns2/youngwoo/pixal3d/prepared-v2
-  scratch_root: /dev/shm/tmp
+  # NS2 legacy prepared는 read-only로 유지한다. v2 intermediate와 publish 결과는 NS3에 분리한다.
+  work_root: /home/rvi/ns3/youngwoo/pixal3d/preprocess_v2
+  prepared_root: /home/rvi/ns3/youngwoo/pixal3d/prepared-v2
 
 raw:
-  mode: archive_7z
+  mode: direct_glb
   root: /home/rvi/ns3/jaehyeok/ds/Objaverse-full
-  glb_root: glbs
-  object_path_index: /home/rvi/ns3/jaehyeok/ds/Objaverse-full/object-paths.json.gz
-  archive_binary: /usr/bin/7z
+  # archive에서 새로 푼 Sketchfab GLB와 archive 밖의 기존 direct GLB를 함께 읽는다.
+  glb_roots:
+    - glbs_direct
+    - glbs
 
 stages:
   dump: {}

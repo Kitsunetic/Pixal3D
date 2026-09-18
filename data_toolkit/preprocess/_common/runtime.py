@@ -8,10 +8,8 @@ import json
 import os
 from pathlib import Path
 import pickle
-import subprocess
 import tempfile
-from contextlib import contextmanager
-from typing import Any, Iterator, Iterable, Mapping
+from typing import Any, Iterable, Mapping
 
 import yaml
 
@@ -19,8 +17,8 @@ import yaml
 DEFAULT_SOURCE = "ObjaverseXL_sketchfab"
 DEFAULT_SHARD = "ObjaverseXL_sketchfab-00000"
 DEFAULT_BATCH = "batch000"
-DEFAULT_WORK_ROOT = Path("data/preprocess_v2")
-DEFAULT_PREPARED_ROOT = Path("/home/rvi/ns2/youngwoo/pixal3d/prepared-v2")
+DEFAULT_WORK_ROOT = Path("/home/rvi/ns3/youngwoo/pixal3d/preprocess_v2")
+DEFAULT_PREPARED_ROOT = Path("/home/rvi/ns3/youngwoo/pixal3d/prepared-v2")
 PREPARED_V2_COMPLETION_FILE = "completion.json"
 LEGACY_PREPARED_FAMILIES = frozenset(
     {
@@ -306,25 +304,12 @@ def successful(records: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return [dict(record) for record in records if record.get("status") == "ok"]
 
 
-@contextmanager
-def materialize_glb(record: Mapping[str, Any], scratch_root: Path, archive_binary: str) -> Iterator[Path]:
-    """Yield a direct GLB, extracting one archive member into temporary local storage if needed."""
+def direct_glb_path(record: Mapping[str, Any]) -> Path:
+    """Return the already-extracted direct GLB referenced by a manifest record."""
     kind = record.get("raw_kind", "direct")
-    if kind == "direct":
-        yield Path(str(record["raw_path"]))
-        return
-    if kind != "archive_7z":
-        raise ValueError(f"unsupported raw kind: {kind!r}")
-    archive_path = Path(str(record["archive_path"]))
-    member = str(record["archive_member"])
-    scratch_root.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=scratch_root, prefix=f"{record['asset_id'][:12]}.") as temporary:
-        subprocess.run(
-            [archive_binary, "x", "-y", f"-o{temporary}", str(archive_path), member],
-            stdout=subprocess.DEVNULL,
-            check=True,
-        )
-        extracted = Path(temporary) / member
-        if not extracted.is_file():
-            raise RuntimeError(f"archive extraction did not create {member}")
-        yield extracted
+    if kind != "direct":
+        raise ValueError(f"unsupported raw kind: {kind!r}; direct GLB만 지원합니다")
+    path = Path(str(record["raw_path"]))
+    if not path.is_file():
+        raise FileNotFoundError(f"direct GLB를 찾을 수 없습니다: {path}")
+    return path

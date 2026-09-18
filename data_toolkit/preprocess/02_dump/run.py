@@ -18,10 +18,9 @@ from data_toolkit.preprocess._common.runtime import (
     apply_batch_defaults,
     atomic_pickle_dump,
     atomic_write_jsonl,
-    config_get,
+    direct_glb_path,
     load_config,
     completed_batch_reason,
-    materialize_glb,
     read_jsonl,
     resolve_work_root,
     require_batch_ownership,
@@ -98,8 +97,6 @@ def main() -> int:
     from types import SimpleNamespace
     from data_toolkit.blender_script import dump_pbr
 
-    scratch_root = Path(config_get(config, "paths", "scratch_root"))
-    archive_binary = str(config_get(config, "raw", "archive_binary"))
     manifest = arguments.manifest or stage_root(work_root, "01", "manifest") / "manifest.jsonl"
     mesh_root = output / "mesh_dumps"
     pbr_root = output / "pbr_dumps"
@@ -121,8 +118,8 @@ def main() -> int:
                 result.update(status="ok", mesh_path=str(mesh_path), pbr_path=str(pbr_path), skipped=True)
             else:
                 temporary.parent.mkdir(parents=True, exist_ok=True)
-                with materialize_glb(record, scratch_root, archive_binary) as object_path:
-                    dump_pbr.main(SimpleNamespace(object=str(object_path), output_path=str(temporary)))
+                object_path = direct_glb_path(record)
+                dump_pbr.main(SimpleNamespace(object=str(object_path), output_path=str(temporary)))
                 with temporary.open("rb") as stream:
                     pbr = pickle.load(stream)
                 atomic_pickle_dump(pbr_path, pbr)
