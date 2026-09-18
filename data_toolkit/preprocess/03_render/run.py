@@ -17,13 +17,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from data_toolkit.preprocess._common.runtime import (
     add_batch_location_arguments,
     add_config_argument,
+    add_rank_arguments,
     apply_batch_defaults,
     atomic_write_jsonl,
     config_get,
     load_config,
+    completed_batch_reason,
     materialize_glb,
     read_jsonl,
     resolve_work_root,
+    require_batch_ownership,
     require_single_visible_cuda_device,
     stage_root,
     successful,
@@ -35,25 +38,39 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     add_config_argument(parser)
     add_batch_location_arguments(parser)
+    add_rank_arguments(parser)
     parser.add_argument("--manifest", type=Path, default=None)
     parser.add_argument("--resolution", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
     arguments = parser.parse_args()
     config, config_path = load_config(arguments.config)
     apply_batch_defaults(arguments, config)
+    batch_index = require_batch_ownership(arguments, config)
     resolution = arguments.resolution if arguments.resolution is not None else int(config_get(config, "stages", "render", "resolution"))
     seed = arguments.seed if arguments.seed is not None else config_get(config, "stages", "render", "seed")
+    work_root = resolve_work_root(arguments, config)
+    output = stage_root(work_root, "03", "render")
+    skip_reason = completed_batch_reason(config, arguments.source, arguments.shard, arguments.batch)
+    if skip_reason is not None:
+        atomic_write_jsonl(output / "manifest.jsonl", [])
+        write_stage_info(
+            output, stage="03_render", config=str(config_path), total=0,
+            batch_index=batch_index, world_size=arguments.world_size, rank=arguments.rank,
+            skipped_completed=True, skip_reason=skip_reason,
+            skipped_existing_prepared=skip_reason == "legacy_prepared",
+            skipped_published_prepared_v2=skip_reason == "prepared_v2",
+        )
+        print(output / "manifest.jsonl")
+        return 0
     cuda_visible_devices = require_single_visible_cuda_device()
 
     from data_toolkit.blender_script import render_cond
     from data_toolkit.pipeline.camera import build_condition_views
     from data_toolkit.pipeline.config import RenderConfig
 
-    work_root = resolve_work_root(arguments, config)
     scratch_root = Path(config_get(config, "paths", "scratch_root"))
     archive_binary = str(config_get(config, "raw", "archive_binary"))
     manifest = arguments.manifest or stage_root(work_root, "02", "dump") / "manifest.jsonl"
-    output = stage_root(work_root, "03", "render")
     render_root = output / "renders_cond"
     camera_config = RenderConfig(
         num_views=8,
@@ -103,6 +120,7 @@ def main() -> int:
     errors = [record for record in results if record.get("status") == "error"]
     write_stage_info(
         output, stage="03_render", config=str(config_path), cuda_visible_devices=cuda_visible_devices, total=len(results),
+        batch_index=batch_index, world_size=arguments.world_size, rank=arguments.rank,
         succeeded=len(ok), skipped=len(results) - len(ok) - len(errors), errors=len(errors), views=8,
     )
     print(output / "manifest.jsonl")

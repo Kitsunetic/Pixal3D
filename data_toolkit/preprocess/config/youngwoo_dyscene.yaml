@@ -8,6 +8,7 @@ batch:
 
 paths:
   control_root: /root/data2/pixal3d/control
+  existing_prepared_root: /root/data2/pixal3d/prepared
   work_root: /root/node17/data/pixal3d/preprocess_v2
   prepared_root: /root/data2/pixal3d/prepared-v2
   scratch_root: /dev/shm/tmp

@@ -7,6 +7,7 @@ batch:
 
 paths:
   control_root: /home/rvi/ns2/youngwoo/pixal3d/control
+  existing_prepared_root: /home/rvi/ns2/youngwoo/pixal3d/prepared
   work_root: data/preprocess_v2
   prepared_root: /home/rvi/ns2/youngwoo/pixal3d/prepared-v2
   scratch_root: /dev/shm/tmp

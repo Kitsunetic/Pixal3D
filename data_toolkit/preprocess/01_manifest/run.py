@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import fcntl
 import gzip
 import json
 import os
@@ -19,10 +20,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from data_toolkit.preprocess._common.runtime import (
     add_batch_location_arguments,
     add_config_argument,
+    add_rank_arguments,
     apply_batch_defaults,
     atomic_write_jsonl,
     config_get,
     load_config,
+    completed_batch_reason,
+    require_batch_ownership,
     resolve_work_root,
     sha256_file,
     stage_root,
@@ -120,6 +124,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     add_config_argument(parser)
     add_batch_location_arguments(parser)
+    add_rank_arguments(parser)
     parser.add_argument("--instances", type=Path, default=None)
     parser.add_argument("--metadata-csv", type=Path, default=None)
     parser.add_argument("--index-path", type=Path, default=None)
@@ -128,6 +133,7 @@ def main() -> int:
     arguments = parser.parse_args()
     config, config_path = load_config(arguments.config)
     apply_batch_defaults(arguments, config)
+    batch_index = require_batch_ownership(arguments, config)
     work_root = resolve_work_root(arguments, config)
     control_root = Path(config_get(config, "paths", "control_root"))
     instances = arguments.instances or control_root / "shards" / arguments.source / arguments.shard / f"{arguments.batch}.txt"
@@ -135,10 +141,32 @@ def main() -> int:
     index_path = (arguments.index_path or default_index_path(work_root)).resolve()
     raw = dict(config_get(config, "raw"))
     if arguments.build_index:
-        indexed = build_index(index_path, metadata_csv, raw)
-        print(f"indexed {indexed} assets: {index_path}")
+        lock_path = index_path.with_name(f".{index_path.name}.lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("w") as lock_stream:
+            fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX)
+            if index_path.is_file():
+                print(f"using existing index: {index_path}")
+            else:
+                indexed = build_index(index_path, metadata_csv, raw)
+                print(f"indexed {indexed} assets: {index_path}")
     if not index_path.is_file():
         parser.error(f"asset index가 없습니다. 한 번 --build-index로 실행하세요: {index_path}")
+
+    output = stage_root(work_root, "01", "manifest")
+    skip_reason = completed_batch_reason(config, arguments.source, arguments.shard, arguments.batch)
+    if skip_reason is not None:
+        atomic_write_jsonl(output / "manifest.jsonl", [])
+        write_stage_info(
+            output, stage="01_manifest", config=str(config_path), source=arguments.source,
+            shard=arguments.shard, batch=arguments.batch, count=0, succeeded=0,
+            batch_index=batch_index, world_size=arguments.world_size, rank=arguments.rank,
+            skipped_completed=True, skip_reason=skip_reason,
+            skipped_existing_prepared=skip_reason == "legacy_prepared",
+            skipped_published_prepared_v2=skip_reason == "prepared_v2",
+        )
+        print(output / "manifest.jsonl")
+        return 0
 
     asset_ids = [line.strip() for line in instances.read_text().splitlines() if line.strip()]
     connection = sqlite3.connect(f"file:{index_path}?mode=ro", uri=True)
@@ -165,12 +193,12 @@ def main() -> int:
         if arguments.hash_input and raw_kind == "direct":
             record["raw_sha256"] = sha256_file(Path(raw_path))
         records.append(record)
-    output = stage_root(work_root, "01", "manifest")
     atomic_write_jsonl(output / "manifest.jsonl", records)
     write_stage_info(
         output, stage="01_manifest", config=str(config_path), source=arguments.source,
         shard=arguments.shard, batch=arguments.batch, instances=str(instances),
         metadata_csv=str(metadata_csv), index_path=str(index_path), count=len(records),
+        batch_index=batch_index, world_size=arguments.world_size, rank=arguments.rank,
         succeeded=sum(record["status"] == "ok" for record in records),
     )
     print(output / "manifest.jsonl")

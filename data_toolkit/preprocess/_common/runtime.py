@@ -21,6 +21,19 @@ DEFAULT_SHARD = "ObjaverseXL_sketchfab-00000"
 DEFAULT_BATCH = "batch000"
 DEFAULT_WORK_ROOT = Path("data/preprocess_v2")
 DEFAULT_PREPARED_ROOT = Path("/home/rvi/ns2/youngwoo/pixal3d/prepared-v2")
+PREPARED_V2_COMPLETION_FILE = "completion.json"
+LEGACY_PREPARED_FAMILIES = frozenset(
+    {
+        "common",
+        "SS-64",
+        "shape-256",
+        "shape-512",
+        "shape-1024",
+        "PBR-256",
+        "PBR-512",
+        "PBR-1024",
+    }
+)
 
 
 def repository_root() -> Path:
@@ -85,6 +98,12 @@ def add_batch_location_arguments(parser: Any) -> None:
     )
 
 
+def add_rank_arguments(parser: Any) -> None:
+    """Require a deterministic global batch shard for every stage invocation."""
+    parser.add_argument("--world-size", type=int, required=True)
+    parser.add_argument("--rank", type=int, required=True)
+
+
 def apply_batch_defaults(arguments: Any, config: Mapping[str, Any]) -> None:
     arguments.source = arguments.source or config_get(config, "dataset", "source")
     arguments.shard = arguments.shard or config_get(config, "batch", "shard")
@@ -98,6 +117,91 @@ def resolve_work_root(arguments: Any, config: Mapping[str, Any]) -> Path:
         Path(config_get(config, "paths", "work_root"))
         / arguments.source / arguments.shard / arguments.batch
     ).resolve()
+
+
+def batch_index(config: Mapping[str, Any], source: str, shard: str, batch: str) -> int:
+    """Return the stable index of a control batch without persisting scheduler state."""
+    control_root = Path(config_get(config, "paths", "control_root"))
+    shard_root = control_root / "shards" / source
+    paths = sorted(shard_root.glob("*/batch*.txt"), key=lambda path: path.relative_to(shard_root).as_posix())
+    target = shard_root / shard / f"{batch}.txt"
+    try:
+        return paths.index(target)
+    except ValueError as error:
+        raise ValueError(f"control batch를 찾을 수 없습니다: {target}") from error
+
+
+def require_batch_ownership(arguments: Any, config: Mapping[str, Any]) -> int:
+    """Validate ``batch_index % world_size == rank`` and return the batch index."""
+    if arguments.world_size <= 0:
+        raise ValueError("--world-size는 양수여야 합니다")
+    if not 0 <= arguments.rank < arguments.world_size:
+        raise ValueError("--rank는 0 이상 --world-size 미만이어야 합니다")
+    index = batch_index(config, arguments.source, arguments.shard, arguments.batch)
+    owner = index % arguments.world_size
+    if owner != arguments.rank:
+        raise ValueError(
+            f"{arguments.source}/{arguments.shard}/{arguments.batch}의 batch_index={index}는 "
+            f"world_size={arguments.world_size}에서 rank={owner}의 소유입니다"
+        )
+    return index
+
+
+def legacy_prepared_batch_complete(
+    config: Mapping[str, Any], source: str, shard: str, batch: str
+) -> bool:
+    """Return whether the legacy production prepared index proves a full batch pack."""
+    root = Path(config_get(config, "paths", "existing_prepared_root"))
+    index_path = root / "index" / source / f"{shard}.json"
+    if not index_path.is_file():
+        return False
+    try:
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"invalid legacy prepared index: {index_path}: {error}") from error
+    if (
+        index.get("gate") != "production"
+        or index.get("source") != source
+        or index.get("shard_id") != shard
+    ):
+        return False
+    entries = index.get("batches", {}).get(batch)
+    return isinstance(entries, Mapping) and set(entries) == LEGACY_PREPARED_FAMILIES
+
+
+def prepared_v2_batch_complete(
+    config: Mapping[str, Any], source: str, shard: str, batch: str,
+    prepared_root: Path | None = None,
+) -> bool:
+    """Return whether an atomically published v2 batch has its completion marker."""
+    root = prepared_root or Path(config_get(config, "paths", "prepared_root"))
+    target = root / source / shard / batch
+    marker = target / PREPARED_V2_COMPLETION_FILE
+    if not marker.is_file():
+        return False
+    try:
+        completion = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"invalid prepared-v2 completion marker: {marker}: {error}") from error
+    return (
+        completion.get("schema") == "pixal3d-preprocess-v2-completion-v1"
+        and completion.get("source") == source
+        and completion.get("shard") == shard
+        and completion.get("batch") == batch
+        and isinstance(completion.get("assets"), int)
+        and all((target / name).is_dir() for name in ("shape", "pbr", "ss"))
+    )
+
+
+def completed_batch_reason(
+    config: Mapping[str, Any], source: str, shard: str, batch: str,
+    prepared_root: Path | None = None,
+) -> str | None:
+    if legacy_prepared_batch_complete(config, source, shard, batch):
+        return "legacy_prepared"
+    if prepared_v2_batch_complete(config, source, shard, batch, prepared_root):
+        return "prepared_v2"
+    return None
 
 
 def stage_root(work_root: Path, number: str, name: str) -> Path:

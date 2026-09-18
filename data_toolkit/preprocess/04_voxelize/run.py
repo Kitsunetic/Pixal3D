@@ -12,12 +12,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from data_toolkit.preprocess._common.runtime import (
     add_batch_location_arguments,
     add_config_argument,
+    add_rank_arguments,
     apply_batch_defaults,
     atomic_write_jsonl,
     config_get,
     load_config,
+    completed_batch_reason,
     read_jsonl,
     resolve_work_root,
+    require_batch_ownership,
     stage_root,
     successful,
     write_legacy_metadata,
@@ -40,6 +43,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     add_config_argument(parser)
     add_batch_location_arguments(parser)
+    add_rank_arguments(parser)
     parser.add_argument("--manifest", type=Path, default=None)
     parser.add_argument("--resolutions", default=None)
     parser.add_argument("--view-indices", default=None)
@@ -47,13 +51,26 @@ def main() -> int:
     arguments = parser.parse_args()
     config, config_path = load_config(arguments.config)
     apply_batch_defaults(arguments, config)
+    batch_index = require_batch_ownership(arguments, config)
     resolutions_arg = arguments.resolutions or str(config_get(config, "stages", "voxelize", "resolutions"))
     view_indices_arg = arguments.view_indices or str(config_get(config, "stages", "voxelize", "view_indices"))
     native_threads = arguments.native_threads if arguments.native_threads is not None else int(config_get(config, "stages", "voxelize", "native_threads"))
 
     work_root = resolve_work_root(arguments, config)
-    manifest = arguments.manifest or stage_root(work_root, "03", "render") / "manifest.jsonl"
     output = stage_root(work_root, "04", "voxelize")
+    skip_reason = completed_batch_reason(config, arguments.source, arguments.shard, arguments.batch)
+    if skip_reason is not None:
+        atomic_write_jsonl(output / "manifest.jsonl", [])
+        write_stage_info(
+            output, stage="04_voxelize", config=str(config_path), total=0,
+            batch_index=batch_index, world_size=arguments.world_size, rank=arguments.rank,
+            skipped_completed=True, skip_reason=skip_reason,
+            skipped_existing_prepared=skip_reason == "legacy_prepared",
+            skipped_published_prepared_v2=skip_reason == "prepared_v2",
+        )
+        print(output / "manifest.jsonl")
+        return 0
+    manifest = arguments.manifest or stage_root(work_root, "03", "render") / "manifest.jsonl"
     records = successful(read_jsonl(manifest))
     if not records:
         parser.error("03_render의 성공 asset이 없습니다")
@@ -92,6 +109,7 @@ def main() -> int:
     atomic_write_jsonl(output / "manifest.jsonl", result_records)
     write_stage_info(
         output, stage="04_voxelize", total=len(records),
+        batch_index=batch_index, world_size=arguments.world_size, rank=arguments.rank,
         config=str(config_path), succeeded=len(successful(result_records)), resolutions=resolutions_arg,
         view_indices=view_indices_arg,
     )

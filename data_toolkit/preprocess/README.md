@@ -21,7 +21,7 @@
 | `05_encode` | shape → SS → PBR encoder를 한 CUDA 프로세스에서 실행 | voxel | `05_encode/{shape,ss,pbr}` |
 | `06_finalize` | latent 트리를 확인하고 선택적으로 별도 prepared-v2에 publish | encode | `06_finalize/report.json`, 선택적 `prepared-v2` |
 
-`02_dump`는 PBR dump가 이미 보유한 geometry를 재사용하므로 mesh/PBR를 따로 import하거나 triangulate하지 않는다. Blender의 `image.pixels` 읽기는 CPU 경계지만, 읽은 뒤의 float clamp/quantization은 PyTorch CUDA에서 수행한다. `03_render`는 dump를 참조하지 않고 rendering만 한다.
+`02_dump`는 PBR dump가 이미 보유한 geometry를 재사용하므로 mesh/PBR를 따로 import하거나 triangulate하지 않는다. Blender image extraction과 quantization까지 CPU-only로 수행한다. `03_render`는 dump를 참조하지 않고 rendering만 한다.
 
 ## 설정
 
@@ -32,6 +32,7 @@
 | `paths.control_root` | control shard와 metadata 입력 경로 |
 | `paths.work_root` | 단계별 로컬 작업 출력 루트 (`01`~`06`) |
 | `paths.prepared_root` | `06_finalize --publish`의 최종 publish 대상 |
+| `paths.existing_prepared_root` | 기존 production `prepared/index`를 읽어 이미 완결된 legacy batch를 제외하는 경로 |
 | `paths.scratch_root` | 7z GLB member를 푸는 짧은 수명의 local temporary 경로 |
 | `raw.*` | raw source 방식, Objaverse archive root, object-path index, extractor binary |
 | `stages.*` | render 해상도, voxel 해상도/view, encoder DataLoader·microbatch 설정 |
@@ -49,134 +50,58 @@ paths:
 
 `local.yaml`은 `default.yaml`의 전체 구조를 포함해야 한다. YAML merge/overlay를 암묵적으로 하지 않아 설정 결과가 모호해지지 않게 했다.
 
-## 실행
+## 실행: world-size/rank 필수
 
-아래 예시는 n17의 `youngwoo_diyscene` container 안에서 실행하는 기준이다. 다른 환경은 `CONFIG`만 해당 YAML로 바꾼다. embedded `bpy`가 있는 torch 환경만 사용하며 외부 Blender 실행 파일은 사용하지 않는다.
+모든 `01`~`06` stage에는 `--world-size`, `--rank`가 **필수**다. control의
+`<shard>/batch*.txt` 전체를 shard/batch 상대경로로 정렬한 위치가 `batch_index`이며,
+stage는 `batch_index % world_size == rank`가 아니면 실행을 거부한다. 완료 여부와
+관계없이 전체 목록을 기준으로 index를 계산하므로 재시작해도 분할이 변하지 않는다.
+
+중간 산출물은 worker node의 `./data/preprocess_v2`에만 남긴다. 다른 node의 중간
+결과를 읽지 않는다. legacy `prepared`와 completion marker가 있는 `prepared-v2` batch는
+모든 stage 및 rank launcher가 skip한다.
+
+GPU stage(`03`, `05`)는 `CUDA_VISIBLE_DEVICES`로 정확히 한 device만 지정한다.
+`02_dump`는 CPU-only다.
+
+### 한 batch 확인
+
+world size 1, rank 0은 모든 batch의 유효한 소유자이므로 단일 batch 확인에 사용한다.
 
 ```bash
 TORCH_PYTHON=/home/rvi/conda/envs/torch/bin/python
-CONFIG=data_toolkit/preprocess/config/youngwoo_dyscene.yaml
-SOURCE=ObjaverseXL_sketchfab
-BATCH_ROOT=/root/data2/pixal3d/control/shards/$SOURCE
-export TORCH_PYTHON CONFIG
+$TORCH_PYTHON data_toolkit/preprocess/02_dump/run.py \
+  --world-size 1 --rank 0 \
+  --shard ObjaverseXL_sketchfab-00000 --batch batch010
 ```
 
-GPU 단계(`02`, `03`, `05`)에는 `--gpu` 옵션이 없다. launcher가 `CUDA_VISIBLE_DEVICES`로 **정확히 하나의 device**를 지정한다. 예를 들어 `CUDA_VISIBLE_DEVICES=5`면 프로세스 내부의 `cuda:0`은 물리 GPU 5다.
+### rank worker: batch-closed 실행
 
-### 한 batch만 실행
-
-`batch000` 하나를 처음부터 끝까지 실행하는 예시다. `01`의 `--build-index`는 raw source index가 없거나 raw 설정을 바꾼 경우에만 먼저 한 번 실행한다.
+각 process는 하나의 rank만 갖고, 자신이 소유한 batch를 로컬에서 01부터 06까지
+순서대로 실행한다. outer launcher는 queue/scheduler가 아니라 deterministic 목록 확장기다.
 
 ```bash
-$TORCH_PYTHON data_toolkit/preprocess/01_manifest/run.py \
-  --config "$CONFIG" --build-index \
-  --shard ObjaverseXL_sketchfab-00000 --batch batch000
-
-CUDA_VISIBLE_DEVICES=5 $TORCH_PYTHON data_toolkit/preprocess/02_dump/run.py \
-  --config "$CONFIG" --shard ObjaverseXL_sketchfab-00000 --batch batch000
-
-CUDA_VISIBLE_DEVICES=5 $TORCH_PYTHON data_toolkit/preprocess/03_render/run.py \
-  --config "$CONFIG" --shard ObjaverseXL_sketchfab-00000 --batch batch000
-
-$TORCH_PYTHON data_toolkit/preprocess/04_voxelize/run.py \
-  --config "$CONFIG" --shard ObjaverseXL_sketchfab-00000 --batch batch000
-
-CUDA_VISIBLE_DEVICES=5 $TORCH_PYTHON data_toolkit/preprocess/05_encode/run.py \
-  --config "$CONFIG" --shard ObjaverseXL_sketchfab-00000 --batch batch000
-
-$TORCH_PYTHON data_toolkit/preprocess/06_finalize/run.py \
-  --config "$CONFIG" --shard ObjaverseXL_sketchfab-00000 --batch batch000 --publish
+WORLD_SIZE=16
+RANK=3
+/home/rvi/conda/envs/torch/bin/python data_toolkit/preprocess/00_rank/run.py \
+  --world-size "$WORLD_SIZE" --rank "$RANK" --publish
 ```
 
-### 전체 batch: `01_manifest`
-
-먼저 index는 병렬 실행 전에 단 한 번 생성한다. 이후 `xargs -P16`이 batch file 하나를 child process 하나에 주며, 최대 16개를 동시에 실행한다.
+`03`, `05`까지 포함하므로 위 process에는 필요시 GPU를 하나만 노출한다.
 
 ```bash
-$TORCH_PYTHON data_toolkit/preprocess/01_manifest/run.py --config "$CONFIG" --build-index
-
-find "$BATCH_ROOT" -mindepth 2 -maxdepth 2 -name 'batch*.txt' -print0 \
-  | sort -z \
-  | xargs -0 -n1 -P16 bash -c '
-      batch_file="$1"
-      shard="$(basename "$(dirname "$batch_file")")"
-      batch="$(basename "$batch_file" .txt)"
-      exec "$TORCH_PYTHON" data_toolkit/preprocess/01_manifest/run.py \
-        --config "$CONFIG" \
-        --shard "$shard" --batch "$batch"
-    ' _
+CUDA_VISIBLE_DEVICES=5 /home/rvi/conda/envs/torch/bin/python \
+  data_toolkit/preprocess/00_rank/run.py \
+  --world-size 16 --rank 3 --publish
 ```
 
-### 전체 batch: `02_dump`, `03_render`, `05_encode` (GPU 5 한 장)
-
-한 GPU에서는 batch를 순차적으로 실행한다. 아래에서 `STAGE`를 하나씩 `02_dump`, `03_render`, `05_encode`로 바꿔 실행한다. 다음 단계는 이전 단계가 모든 batch에서 끝난 뒤 실행한다.
+CPU-only 02만 실행하려면 stage 목록을 명시한다.
 
 ```bash
-STAGE=02_dump
-while IFS= read -r -d '' batch_file; do
-  shard="$(basename "$(dirname "$batch_file")")"
-  batch="$(basename "$batch_file" .txt)"
-  CUDA_VISIBLE_DEVICES=5 "$TORCH_PYTHON" "data_toolkit/preprocess/$STAGE/run.py" \
-    --config "$CONFIG" --shard "$shard" --batch "$batch"
-done < <(find "$BATCH_ROOT" -mindepth 2 -maxdepth 2 -name 'batch*.txt' -print0 | sort -z)
+/home/rvi/conda/envs/torch/bin/python data_toolkit/preprocess/00_rank/run.py \
+  --world-size 16 --rank 3 --stages 01,02
 ```
 
-### 전체 batch: `04_voxelize`
-
-`04`는 GPU를 선택하지 않는다. `-P4`는 네 batch process를 동시에 실행한다. 각 process 내부의 native thread 수는 YAML의 `stages.voxelize.native_threads`로 제어한다.
-
-```bash
-find "$BATCH_ROOT" -mindepth 2 -maxdepth 2 -name 'batch*.txt' -print0 \
-  | sort -z \
-  | xargs -0 -n1 -P4 bash -c '
-      batch_file="$1"
-      shard="$(basename "$(dirname "$batch_file")")"
-      batch="$(basename "$batch_file" .txt)"
-      exec "$TORCH_PYTHON" data_toolkit/preprocess/04_voxelize/run.py \
-        --config "$CONFIG" \
-        --shard "$shard" --batch "$batch"
-    ' _
-```
-
-### 전체 batch: `06_finalize`
-
-`--publish`는 batch별로 서로 다른 `prepared-v2/<source>/<shard>/<batch>` target만 생성하므로 batch-level 병렬 실행이 가능하다.
-
-```bash
-find "$BATCH_ROOT" -mindepth 2 -maxdepth 2 -name 'batch*.txt' -print0 \
-  | sort -z \
-  | xargs -0 -n1 -P4 bash -c '
-      batch_file="$1"
-      shard="$(basename "$(dirname "$batch_file")")"
-      batch="$(basename "$batch_file" .txt)"
-      exec "$TORCH_PYTHON" data_toolkit/preprocess/06_finalize/run.py \
-        --config "$CONFIG" \
-        --shard "$shard" --batch "$batch" --publish
-    ' _
-```
-
-### GPU가 여러 장일 때
-
-`02`, `03`, `05`는 GPU 하나당 worker 하나를 띄운다. 아래는 GPU 0·1 두 장에 batch 목록을 modulo로 고정 분할하는 예시이며, `STAGE`는 한 번에 하나만 실행한다. worker가 재시작되어도 같은 batch 분할을 다시 얻으며 scheduler나 shared queue는 없다.
-
-```bash
-run_gpu_worker() {
-  local gpu="$1" slot="$2" slots="$3" stage="$4"
-  find "$BATCH_ROOT" -mindepth 2 -maxdepth 2 -name 'batch*.txt' -print \
-    | sort \
-    | awk -v slot="$slot" -v slots="$slots" '(NR - 1) % slots == slot' \
-    | while IFS= read -r batch_file; do
-        shard="$(basename "$(dirname "$batch_file")")"
-        batch="$(basename "$batch_file" .txt)"
-        CUDA_VISIBLE_DEVICES="$gpu" "$TORCH_PYTHON" "data_toolkit/preprocess/$stage/run.py" \
-          --config "$CONFIG" --shard "$shard" --batch "$batch"
-      done
-}
-
-STAGE=02_dump
-run_gpu_worker 0 0 2 "$STAGE" &
-run_gpu_worker 1 1 2 "$STAGE" &
-wait
-```
-
-같은 batch에 대해 이후 단계를 재실행하면 이미 완성된 mesh/PBR dump와 render directory는 건너뛴다. `04`는 legacy voxel 수학 함수를 직접 순차 호출하며, production pipeline CLI, queue, scheduler를 호출하지 않는다. `05_encode`는 기존 PyTorch `Dataset`/`DataLoader` encoder들을 하나의 CUDA 프로세스에서 shape → SS → PBR 순으로 실행한다. 모델은 필요한 family/resolution 동안만 cache하며 다음 family 전에 해제하므로, 현재 GPU 메모리 사용량을 실제로 측정한 뒤 세 model의 동시 상주 여부를 결정할 수 있다.
+동일한 `(world_size, rank)`를 중복 실행하면 안 된다. 물리 서버나 process 수를 바꿔
+새 invocation을 시작할 수 있지만, 아직 publish되지 않은 batch가 새 rank로 이동하면
+그 node의 local work root에서 처음부터 다시 생성된다.

@@ -14,15 +14,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from data_toolkit.preprocess._common.runtime import (
     add_batch_location_arguments,
     add_config_argument,
+    add_rank_arguments,
     apply_batch_defaults,
     atomic_pickle_dump,
     atomic_write_jsonl,
     config_get,
     load_config,
+    completed_batch_reason,
     materialize_glb,
     read_jsonl,
     resolve_work_root,
-    require_single_visible_cuda_device,
+    require_batch_ownership,
     stage_root,
     successful,
     write_legacy_metadata,
@@ -30,26 +32,18 @@ from data_toolkit.preprocess._common.runtime import (
 )
 
 
-def _gpu_extract_image(tex_node, channels):
-    """Blender pixels를 가져온 뒤의 clamp/quantize만 CUDA에서 수행한다.
-
-    ``foreach_get``는 bpy가 제공하는 CPU 경계이며, 결과 PNG schema는 legacy
-    ``dump_pbr.extract_image``와 동일하다.
-    """
+def _cpu_extract_image(tex_node, channels):
+    """Legacy PNG schema를 보존하는 CPU-only texture extraction."""
     import numpy as np
-    import torch
     from PIL import Image
 
     image = tex_node.image
     values = np.empty(len(image.pixels), dtype=np.float32)
     image.pixels.foreach_get(values)
-    data = torch.from_numpy(values).view(image.size[1], image.size[0], -1)
+    data = values.reshape(image.size[1], image.size[0], -1)
     data = data[..., channels]
-    if data.dtype != torch.uint8:
-        data = data.to("cuda:0", non_blocking=False).clamp_(0.0, 1.0).mul_(255).to(torch.uint8)
-        data = data.cpu().numpy()
-    else:
-        data = data.numpy()
+    if data.dtype != np.uint8:
+        data = (np.clip(data, 0.0, 1.0) * 255).astype(np.uint8)
     if data.ndim == 2:
         pil_image = Image.fromarray(data, mode="L")
     elif data.shape[2] == 3:
@@ -80,25 +74,36 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     add_config_argument(parser)
     add_batch_location_arguments(parser)
+    add_rank_arguments(parser)
     parser.add_argument("--manifest", type=Path, default=None)
     arguments = parser.parse_args()
     config, config_path = load_config(arguments.config)
     apply_batch_defaults(arguments, config)
-    cuda_visible_devices = require_single_visible_cuda_device()
-
-    # CUDA visibility must be fixed before torch is imported by the PBR path.
+    batch_index = require_batch_ownership(arguments, config)
+    work_root = resolve_work_root(arguments, config)
+    output = stage_root(work_root, "02", "dump")
+    skip_reason = completed_batch_reason(config, arguments.source, arguments.shard, arguments.batch)
+    if skip_reason is not None:
+        atomic_write_jsonl(output / "manifest.jsonl", [])
+        write_stage_info(
+            output, stage="02_dump", config=str(config_path), total=0,
+            batch_index=batch_index, world_size=arguments.world_size, rank=arguments.rank,
+            skipped_completed=True, skip_reason=skip_reason,
+            skipped_existing_prepared=skip_reason == "legacy_prepared",
+            skipped_published_prepared_v2=skip_reason == "prepared_v2",
+        )
+        print(output / "manifest.jsonl")
+        return 0
     import pickle
     from types import SimpleNamespace
     from data_toolkit.blender_script import dump_pbr
 
-    work_root = resolve_work_root(arguments, config)
     scratch_root = Path(config_get(config, "paths", "scratch_root"))
     archive_binary = str(config_get(config, "raw", "archive_binary"))
     manifest = arguments.manifest or stage_root(work_root, "01", "manifest") / "manifest.jsonl"
-    output = stage_root(work_root, "02", "dump")
     mesh_root = output / "mesh_dumps"
     pbr_root = output / "pbr_dumps"
-    dump_pbr.extract_image = _gpu_extract_image
+    dump_pbr.extract_image = _cpu_extract_image
 
     results = []
     for record in read_jsonl(manifest):
@@ -137,7 +142,8 @@ def main() -> int:
     write_legacy_metadata(mesh_root / "metadata.csv", ok, "mesh_dumped")
     write_legacy_metadata(pbr_root / "metadata.csv", ok, "pbr_dumped")
     write_stage_info(
-        output, stage="02_dump", config=str(config_path), cuda_visible_devices=cuda_visible_devices, total=len(results),
+        output, stage="02_dump", config=str(config_path), execution_device="cpu", total=len(results),
+        batch_index=batch_index, world_size=arguments.world_size, rank=arguments.rank,
         succeeded=len(ok), skipped=len(results) - len(ok) - len(errors), errors=len(errors),
     )
     print(output / "manifest.jsonl")
