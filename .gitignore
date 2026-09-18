@@ -13,6 +13,7 @@ errors_view.txt
 /.omo/
 /autoresearch-results/
 /temp/
+/data/
 /.codex_*
 /n[0-9]*-canonical-queue.yaml
 /n[0-9]*-validation.yaml

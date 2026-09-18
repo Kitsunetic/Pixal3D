@@ -1,0 +1,39 @@
+dataset:
+  source: ObjaverseXL_sketchfab
+
+batch:
+  shard: ObjaverseXL_sketchfab-00000
+  name: batch000
+
+paths:
+  control_root: /home/rvi/ns2/youngwoo/pixal3d/control
+  work_root: data/preprocess_v2
+  prepared_root: /home/rvi/ns2/youngwoo/pixal3d/prepared-v2
+  scratch_root: /dev/shm/tmp
+
+raw:
+  mode: archive_7z
+  root: /home/rvi/ns3/jaehyeok/ds/Objaverse-full
+  glb_root: glbs
+  object_path_index: /home/rvi/ns3/jaehyeok/ds/Objaverse-full/object-paths.json.gz
+  archive_binary: /usr/bin/7z
+
+stages:
+  dump: {}
+  render:
+    resolution: 512
+    seed: null
+  voxelize:
+    resolutions: "256,512,1024"
+    view_indices: "0-1"
+    native_threads: 4
+  encode:
+    resolutions: "256,512,1024"
+    ss_resolution: 64
+    view_indices: "0-1"
+    loader_workers: 2
+    saver_workers: 2
+    micro_batch_sizes: "64:16,256:16,512:8,1024:4"
+    latent_dtype: float16
+    gpu_memory_target_percent: 90.0
+    timeout_seconds: 900

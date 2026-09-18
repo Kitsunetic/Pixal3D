@@ -1,0 +1,41 @@
+# n17의 youngwoo_diyscene container 경로를 그대로 사용한다.
+dataset:
+  source: ObjaverseXL_sketchfab
+
+batch:
+  shard: ObjaverseXL_sketchfab-00000
+  name: batch000
+
+paths:
+  control_root: /root/data2/pixal3d/control
+  work_root: /root/node17/data/pixal3d/preprocess_v2
+  prepared_root: /root/data2/pixal3d/prepared-v2
+  scratch_root: /dev/shm/tmp
+
+# 기존 container의 내려받은 direct GLB tree를 쓴다.
+raw:
+  mode: direct_glb
+  root: /root/data2/pixal3d/raw/ObjaverseXL_sketchfab/raw/hf-objaverse-v1
+  glb_root: glbs
+  object_path_index: null
+  archive_binary: /usr/bin/7z
+
+stages:
+  dump: {}
+  render:
+    resolution: 512
+    seed: null
+  voxelize:
+    resolutions: "256,512,1024"
+    view_indices: "0-1"
+    native_threads: 4
+  encode:
+    resolutions: "256,512,1024"
+    ss_resolution: 64
+    view_indices: "0-1"
+    loader_workers: 2
+    saver_workers: 2
+    micro_batch_sizes: "64:16,256:16,512:8,1024:4"
+    latent_dtype: float16
+    gpu_memory_target_percent: 90.0
+    timeout_seconds: 900
