@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 import sys
 
@@ -55,6 +56,16 @@ def main() -> int:
     resolutions_arg = arguments.resolutions or str(config_get(config, "stages", "voxelize", "resolutions"))
     view_indices_arg = arguments.view_indices or str(config_get(config, "stages", "voxelize", "view_indices"))
     native_threads = arguments.native_threads if arguments.native_threads is not None else int(config_get(config, "stages", "voxelize", "native_threads"))
+    # This adapter calls the legacy single-asset functions directly, bypassing
+    # their legacy worker wrapper where the CPU thread cap was previously set.
+    # Keep every rank bounded before importing numpy, the native voxel backend,
+    # and torch.
+    for variable in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        os.environ[variable] = str(native_threads)
+    from data_toolkit.pipeline.parallelism import configure_geometry_threads
+    from data_toolkit.preprocess._common.cpu_ovoxel import import_cpu_ovoxel
+    configure_geometry_threads(native_threads)
+    import_cpu_ovoxel()
 
     work_root = resolve_work_root(arguments, config)
     output = stage_root(work_root, "04", "voxelize")
