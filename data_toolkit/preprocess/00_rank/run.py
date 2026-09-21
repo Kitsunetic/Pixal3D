@@ -10,6 +10,7 @@ stage ``run.py``를 하나씩 호출한다. 중간 산출물은 해당 node의 l
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -58,6 +59,19 @@ def stage_program(root: Path, stage: str) -> Path:
     return root / "data_toolkit" / "preprocess" / f"{stage}_{STAGE_NAMES[stage]}" / "run.py"
 
 
+def stage_complete(config: dict, source: str, shard: str, batch: str, stage: str) -> bool:
+    """Return whether this stage has atomically published its batch marker."""
+    marker = (
+        Path(config_get(config, "paths", "work_root"))
+        / source / shard / batch / f"{stage}_{STAGE_NAMES[stage]}" / "stage.json"
+    )
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return payload.get("stage") == f"{stage}_{STAGE_NAMES[stage]}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     add_config_argument(parser)
@@ -91,8 +105,16 @@ def main() -> int:
             skipped += 1
             print(f"skip {batch_index} {shard}/{batch}: {reason}", flush=True)
             continue
-        print(f"start {batch_index} {shard}/{batch}", flush=True)
-        for stage in stages:
+        pending_stages = tuple(
+            stage for stage in stages
+            if not stage_complete(config, source, shard, batch, stage)
+        )
+        if not pending_stages:
+            skipped += 1
+            print(f"skip {batch_index} {shard}/{batch}: requested stages already complete", flush=True)
+            continue
+        print(f"start {batch_index} {shard}/{batch}: stages={','.join(pending_stages)}", flush=True)
+        for stage in pending_stages:
             command = [
                 sys.executable, str(stage_program(root, stage)),
                 "--config", str(config_path), "--source", source,
