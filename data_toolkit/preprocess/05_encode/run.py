@@ -84,7 +84,9 @@ def main() -> int:
     root = Path(__file__).resolve().parents[3]
     voxel = stage_root(work_root, "04", "voxelize")
     command = [
-        sys.executable, str(root / "data_toolkit/encode_latent_bundle.py"),
+        # Module execution preserves the repository root on sys.path.  Running
+        # the file directly makes ``data_toolkit`` unavailable to the bundle.
+        sys.executable, "-m", "data_toolkit.encode_latent_bundle",
         "--root", str(voxel), "--instances", str(instances),
         "--dual_grid_root", str(voxel), "--pbr_voxel_root", str(voxel),
         "--shape_latent_root", str(output / "shape"),

@@ -35,7 +35,7 @@ stages:
     view_indices: "0-1"
     loader_workers: 2
     saver_workers: 2
-    micro_batch_sizes: "64:16,256:16,512:8,1024:4"
+    micro_batch_sizes: "64:16,256:4,512:2,1024:1"
     latent_dtype: float16
     gpu_memory_target_percent: 90.0
     timeout_seconds: 900
