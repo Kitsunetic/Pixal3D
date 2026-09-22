@@ -1,5 +1,6 @@
 import time
 import threading
+import os
 
 import pytest
 import torch
@@ -98,6 +99,22 @@ def test_records_remain_in_task_order_with_out_of_order_io():
     assert records == [0, 1, 2, 3]
 
 
+def test_encoder_dataset_reads_in_dataloader_worker_processes():
+    parent_pid = os.getpid()
+
+    records = run_encoder_tasks(
+        tasks=[0, 1],
+        micro_batch_size=2,
+        load=lambda task, cancel: (os.getpid(), None),
+        process_batch=lambda payloads: list(payloads),
+        save=lambda task, payload, cancel: payload,
+        loader_workers=2,
+    )
+
+    assert len(records) == 2
+    assert all(worker_pid != parent_pid for worker_pid in records)
+
+
 def test_encoder_workers_are_joined_before_return(monkeypatch):
     original_thread = threading.Thread
     created_threads = []
@@ -122,9 +139,13 @@ def test_encoder_workers_are_joined_before_return(monkeypatch):
         save=lambda task, payload, cancel: task,
     ) == [0, 1]
 
-    assert created_threads
-    assert all(thread.was_joined for thread in created_threads)
-    assert not any(thread.is_alive() for thread in created_threads)
+    saver_threads = [
+        thread for thread in created_threads
+        if thread.name.startswith("encoder-saver-")
+    ]
+    assert saver_threads
+    assert all(thread.was_joined for thread in saver_threads)
+    assert not any(thread.is_alive() for thread in saver_threads)
 
 
 @pytest.mark.parametrize("value", ["../chunk", "chunk/", "chunk\\", "bad\0"])

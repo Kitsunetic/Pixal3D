@@ -19,7 +19,7 @@ NS3 shared root에 01~05 intermediate를 저장하므로 다른 node가 같은 b
 | `02_dump` | embedded `bpy`로 한 번 import하여 PBR dump와 mesh dump를 동시에 생성 | manifest, GLB | `02_dump/{mesh_dumps,pbr_dumps}` |
 | `03_render` | GLB를 조건 뷰로 렌더링 | manifest, GLB | `03_render/renders_cond` |
 | `04_voxelize` | mesh/PBR dump와 camera transform을 voxel로 변환 | dump, render | `04_voxelize/{dual_grid_view_*,pbr_voxels_view_fix_*}` |
-| `05_encode` | shape → SS → PBR encoder를 한 CUDA 프로세스에서 실행 | voxel | `05_encode/{shape,ss,pbr}` |
+| `05_encode` | shape → SS → PBR encoder를 한 CUDA 프로세스에서 실행. VXZ 입력은 PyTorch Dataset/DataLoader로 prefetch하고, latent 저장은 별도 saver queue/thread가 담당 | voxel | `05_encode/{shape,ss,pbr}` |
 | `06_finalize` | latent 트리를 확인하고 선택적으로 별도 prepared-v2에 publish | encode | `06_finalize/report.json`, 선택적 `prepared-v2` |
 
 `02_dump`는 PBR dump가 이미 보유한 geometry를 재사용하므로 mesh/PBR를 따로 import하거나 triangulate하지 않는다. Blender image extraction과 quantization까지 CPU-only로 수행한다. `03_render`는 dump를 참조하지 않고 rendering만 한다.

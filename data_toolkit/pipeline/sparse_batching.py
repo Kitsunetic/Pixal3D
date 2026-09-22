@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 import math
+import multiprocessing as mp
 from queue import Empty, Full, Queue
 import threading
 import time
 
 import torch
+from torch.utils.data import DataLoader, Dataset
 
 
 INTEGER_DTYPES = {
@@ -134,6 +136,37 @@ def _is_cuda_oom(error: BaseException) -> bool:
     )
 
 
+class _EncoderTaskDataset(Dataset):
+    """CPU-side encoder input reader consumed by a PyTorch DataLoader.
+
+    ``load`` is intentionally evaluated in the DataLoader worker rather than
+    in the GPU-owning process.  The production encoders are Linux-only and
+    use ``fork`` workers: their loader closures remain valid while workers
+    never touch CUDA.
+    """
+
+    def __init__(self, tasks, load, cancel_event) -> None:
+        self._tasks = tuple(tasks)
+        self._load = load
+        self._cancel_event = cancel_event
+
+    def __len__(self) -> int:
+        return len(self._tasks)
+
+    def __getitem__(self, index: int):
+        if self._cancel_event.is_set():
+            raise TimeoutError("encoder data loading cancelled")
+        task = self._tasks[index]
+        return index, task, self._load(task, self._cancel_event)
+
+
+def _single_item_collate(items):
+    """Keep variable-size sparse payloads intact for the main process."""
+    if len(items) != 1:
+        raise ValueError("encoder DataLoader must yield one task at a time")
+    return items[0]
+
+
 def run_encoder_tasks(
     *,
     tasks,
@@ -146,7 +179,13 @@ def run_encoder_tasks(
     timeout_seconds: float = 300,
     gpu_memory_target_percent: float = 80.0,
 ):
-    """Run ordered encoder tasks with bounded I/O and adaptive OOM retry."""
+    """Run encoder tasks with DataLoader input and queued threaded output.
+
+    Input prefetch is deliberately one payload per worker. Sparse VXZ payloads
+    are highly variable and arrive through multiprocessing shared memory, so
+    this bounds host-RAM and ``/dev/shm`` residency while still overlapping up
+    to ``loader_workers`` decode operations with GPU work.
+    """
     if (
         type(micro_batch_size) is not int
         or micro_batch_size <= 0
@@ -175,17 +214,18 @@ def run_encoder_tasks(
     if not callable(load) or not callable(process_batch) or not callable(save):
         raise TypeError("load, process_batch, and save must be callable")
 
-    indexed_tasks = list(enumerate(tasks))
-    if not indexed_tasks:
+    task_values = tuple(tasks)
+    if not task_values:
         return []
 
-    cancel_event = threading.Event()
-    loader_tasks = Queue(maxsize=max(2, loader_workers * 2))
-    loader_results = Queue(maxsize=max(2, loader_workers * 2))
+    if "fork" not in mp.get_all_start_methods():
+        raise RuntimeError("encoder DataLoader requires the fork start method")
+
+    cancel_event = mp.get_context("fork").Event()
     saver_tasks = Queue(maxsize=max(2, saver_workers * 2))
     saver_results = Queue(maxsize=max(2, saver_workers * 2))
     errors = Queue(maxsize=max(2, loader_workers + saver_workers))
-    sentinel = object()
+    saver_sentinel = object()
 
     def put_cancellable(queue, value) -> bool:
         while not cancel_event.is_set():
@@ -210,45 +250,20 @@ def run_encoder_tasks(
             return
         raise RuntimeError(f"{stage} failed for {task}: {error}") from error
 
-    def wait_result(queue, stage):
+    def wait_saver_result():
         deadline = time.monotonic() + timeout_seconds
         while True:
             raise_worker_error()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError(
-                    f"{stage} inactivity timed out after "
+                    "saver inactivity timed out after "
                     f"{timeout_seconds} seconds"
                 )
             try:
-                return queue.get(timeout=min(0.05, remaining))
+                return saver_results.get(timeout=min(0.05, remaining))
             except Empty:
                 continue
-
-    def produce() -> None:
-        for item in indexed_tasks:
-            if not put_cancellable(loader_tasks, item):
-                return
-        for _ in range(loader_workers):
-            if not put_cancellable(loader_tasks, sentinel):
-                return
-
-    def loader_worker() -> None:
-        while not cancel_event.is_set():
-            try:
-                item = loader_tasks.get(timeout=0.05)
-            except Empty:
-                continue
-            if item is sentinel:
-                return
-            index, task = item
-            try:
-                loaded = load(task, cancel_event)
-            except BaseException as error:
-                report_error("loader", index, task, error)
-                return
-            if not put_cancellable(loader_results, (index, task, loaded)):
-                return
 
     def saver_worker() -> None:
         while not cancel_event.is_set():
@@ -256,7 +271,7 @@ def run_encoder_tasks(
                 item = saver_tasks.get(timeout=0.05)
             except Empty:
                 continue
-            if item is sentinel:
+            if item is saver_sentinel:
                 return
             index, task, payload = item
             try:
@@ -269,24 +284,33 @@ def run_encoder_tasks(
             ):
                 return
 
-    threads = [threading.Thread(target=produce, daemon=True)]
-    threads.extend(
-        threading.Thread(target=loader_worker, daemon=True)
-        for _ in range(loader_workers)
-    )
-    threads.extend(
-        threading.Thread(target=saver_worker, daemon=True)
-        for _ in range(saver_workers)
-    )
+    threads = [
+        threading.Thread(
+            target=saver_worker,
+            daemon=True,
+            name=f"encoder-saver-{worker_index}",
+        )
+        for worker_index in range(saver_workers)
+    ]
     for thread in threads:
         thread.start()
 
-    loaded_by_index = {}
+    dataset = _EncoderTaskDataset(task_values, load, cancel_event)
+    data_loader = DataLoader(
+        dataset,
+        batch_size=1,
+        shuffle=False,
+        num_workers=loader_workers,
+        collate_fn=_single_item_collate,
+        pin_memory=torch.cuda.is_available(),
+        prefetch_factor=1,
+        multiprocessing_context="fork",
+        timeout=timeout_seconds,
+    )
+    loader_iterator = iter(data_loader)
     records_by_index = {}
     pending_batch = []
     pending_saves = set()
-    next_loaded_index = 0
-    received_loads = 0
     current_batch_size = micro_batch_size
     adaptive_batch_ceiling = micro_batch_size
 
@@ -366,10 +390,16 @@ def run_encoder_tasks(
 
     completed = False
     try:
-        while received_loads < len(indexed_tasks):
+        for _ in range(len(task_values)):
             drain_savers()
-            index, task, loaded = wait_result(loader_results, "loader")
-            received_loads += 1
+            try:
+                index, task, loaded = next(loader_iterator)
+            except RuntimeError as error:
+                if "DataLoader timed out" in str(error):
+                    raise TimeoutError(
+                        f"loader inactivity timed out after {timeout_seconds} seconds"
+                    ) from error
+                raise
             if (
                 not isinstance(loaded, tuple)
                 or len(loaded) != 2
@@ -377,23 +407,16 @@ def run_encoder_tasks(
                 raise TypeError(
                     "loader must return (payload, immediate_record)"
                 )
-            loaded_by_index[index] = (task, loaded[0], loaded[1])
-            while next_loaded_index in loaded_by_index:
-                next_task, payload, immediate_record = loaded_by_index.pop(
-                    next_loaded_index
-                )
-                if immediate_record is not None:
-                    records_by_index[next_loaded_index] = immediate_record
-                if payload is not None:
-                    pending_batch.append(
-                        (next_loaded_index, next_task, payload)
-                    )
-                next_loaded_index += 1
-                process_ready(flush=False)
+            payload, immediate_record = loaded
+            if immediate_record is not None:
+                records_by_index[index] = immediate_record
+            if payload is not None:
+                pending_batch.append((index, task, payload))
+            process_ready(flush=False)
 
         process_ready(flush=True)
         while pending_saves:
-            index, _, record = wait_result(saver_results, "saver")
+            index, _, record = wait_saver_result()
             pending_saves.remove(index)
             if record is not None:
                 records_by_index[index] = record
@@ -405,5 +428,13 @@ def run_encoder_tasks(
         return records
     finally:
         cancel_event.set()
+        shutdown_workers = getattr(loader_iterator, "_shutdown_workers", None)
+        if callable(shutdown_workers):
+            shutdown_workers()
+        for _ in threads:
+            try:
+                saver_tasks.put_nowait(saver_sentinel)
+            except Full:
+                break
         for thread in threads:
             thread.join(timeout=None if completed else 0.25)

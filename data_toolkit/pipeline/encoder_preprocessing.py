@@ -98,7 +98,10 @@ def _tensors_to_device(
         value.device.type == "cpu" for value in values
     ):
         with profile_stage(f"{stage_name}.pin"):
-            pinned = [value.pin_memory() for value in values]
+            pinned = [
+                value if value.is_pinned() else value.pin_memory()
+                for value in values
+            ]
         with profile_stage(f"{stage_name}.h2d", target_device):
             return [
                 value.to(target_device, non_blocking=True) for value in pinned
