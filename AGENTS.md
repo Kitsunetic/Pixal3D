@@ -58,6 +58,8 @@ Model-facing LSP tools were unavailable during generation. The code map uses ast
 ## CONVENTIONS
 
 - There is no project formatter, linter, type checker, package manifest, Makefile, or CI workflow. Direct script/module invocation is the normal interface.
+- For lab-server project work, use `ssh nXjh` for Git, code inspection, tests, and preprocessing. Reserve `ssh nX` and `docker exec` for host/container lifecycle, bind-mount, or host-hardware inspection; do not use them as the normal project-command path.
+- Treat `HOST_SERVER` inside a container as an identity verification value only. It must not override the explicitly selected `nXjh` SSH alias or be used to reroute a project command to another server.
 - Runtime controls use uppercase environment variables; preprocessing overrides generally use the `PIXAL3D_` prefix. Attention accepts a fixed `ATTN_BACKEND` vocabulary; `sdpa` is the fallback when FlashAttention is unavailable.
 - Model configs encode stage, modality, size, resolution, dtype, projection, and fine-tuning state in filenames.
 - Dataset adapter filenames intentionally preserve source names (`3D-FUTURE.py`, `ObjaverseXL.py`, etc.) rather than Python identifier conventions.
