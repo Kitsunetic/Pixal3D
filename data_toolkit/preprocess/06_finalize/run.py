@@ -30,6 +30,10 @@ from data_toolkit.preprocess._common.runtime import (
     successful,
     write_stage_info,
 )
+from data_toolkit.preprocess._common.encode_partition import (
+    expected_latent_paths,
+    parse_view_indices,
+)
 
 
 def main() -> int:
@@ -64,15 +68,32 @@ def main() -> int:
         write_stage_info(output, config=str(config_path), **report)
         print(output / "report.json")
         return 0
-    manifest = arguments.manifest or stage_root(work_root, "05", "encode") / "manifest.jsonl"
+    # 05 may run as disjoint high- and low-voxel partitions.  Its per-partition
+    # manifests are operational logs, not the completion truth for a batch.
+    manifest = arguments.manifest or stage_root(work_root, "04", "voxelize") / "manifest.jsonl"
     records = successful(read_jsonl(manifest))
     if not records:
-        parser.error("05_encode의 성공 asset이 없습니다")
+        parser.error("04_voxelize의 성공 asset이 없습니다")
     encode_root = stage_root(work_root, "05", "encode")
     required = (encode_root / "shape", encode_root / "pbr", encode_root / "ss")
     missing = [str(path) for path in required if not path.exists()]
     if missing:
         parser.error(f"latent 출력이 누락되었습니다: {missing}")
+    encode = config_get(config, "stages", "encode")
+    expected = expected_latent_paths(
+        records,
+        encode_root,
+        resolutions=tuple(int(value) for value in str(encode["resolutions"]).split(",")),
+        ss_resolution=int(encode["ss_resolution"]),
+        view_indices=parse_view_indices(str(encode["view_indices"])),
+    )
+    absent = [path for path in expected if not path.is_file()]
+    if absent:
+        examples = ", ".join(str(path) for path in absent[:3])
+        parser.error(
+            f"05_encode latent이 불완전합니다: {len(absent)}개 파일 누락 "
+            f"(예: {examples})"
+        )
 
     report = {
         "stage": "06_finalize", "source": arguments.source, "shard": arguments.shard,

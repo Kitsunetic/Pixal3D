@@ -80,6 +80,10 @@ def main() -> int:
     parser.add_argument("--rank", type=int, required=True)
     parser.add_argument("--stages", default=",".join(STAGES))
     parser.add_argument("--publish", action="store_true", help="06 단계에서 prepared-v2로 publish")
+    parser.add_argument("--encode-min-shape-1024-voxels", type=int, default=None)
+    parser.add_argument("--encode-max-shape-1024-voxels", type=int, default=None)
+    parser.add_argument("--encode-partition-name", default=None)
+    parser.add_argument("--encode-loader-workers", type=int, default=None)
     arguments = parser.parse_args()
     if arguments.world_size <= 0:
         parser.error("--world-size는 양수여야 합니다")
@@ -89,6 +93,16 @@ def main() -> int:
         stages = parse_stages(arguments.stages)
     except ValueError as error:
         parser.error(str(error))
+    encode_partitioned = (
+        arguments.encode_min_shape_1024_voxels is not None
+        or arguments.encode_max_shape_1024_voxels is not None
+    )
+    if encode_partitioned and not arguments.encode_partition_name:
+        parser.error("voxel-range 05 실행에는 --encode-partition-name이 필요합니다")
+    if encode_partitioned and "05" not in stages:
+        parser.error("voxel-range option은 --stages에 05가 있을 때만 사용할 수 있습니다")
+    if arguments.encode_loader_workers is not None and arguments.encode_loader_workers <= 0:
+        parser.error("--encode-loader-workers는 양수여야 합니다")
 
     config, config_path = load_config(arguments.config)
     source = arguments.source or config_get(config, "dataset", "source")
@@ -107,7 +121,10 @@ def main() -> int:
             continue
         pending_stages = tuple(
             stage for stage in stages
-            if not stage_complete(config, source, shard, batch, stage)
+            if (
+                (encode_partitioned and stage == "05")
+                or not stage_complete(config, source, shard, batch, stage)
+            )
         )
         if not pending_stages:
             skipped += 1
@@ -125,6 +142,25 @@ def main() -> int:
                 command.append("--build-index")
             if stage == "06" and arguments.publish:
                 command.append("--publish")
+            if stage == "05" and encode_partitioned:
+                command.extend([
+                    "--partition-name", arguments.encode_partition_name,
+                ])
+                if arguments.encode_min_shape_1024_voxels is not None:
+                    command.extend([
+                        "--min-shape-1024-voxels",
+                        str(arguments.encode_min_shape_1024_voxels),
+                    ])
+                if arguments.encode_max_shape_1024_voxels is not None:
+                    command.extend([
+                        "--max-shape-1024-voxels",
+                        str(arguments.encode_max_shape_1024_voxels),
+                    ])
+                if arguments.encode_loader_workers is not None:
+                    command.extend([
+                        "--loader-workers",
+                        str(arguments.encode_loader_workers),
+                    ])
             result = subprocess.run(command, cwd=root)
             if result.returncode == 2:
                 soft_failed += 1

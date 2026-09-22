@@ -28,6 +28,10 @@ from data_toolkit.preprocess._common.runtime import (
     successful,
     write_stage_info,
 )
+from data_toolkit.preprocess._common.encode_partition import (
+    parse_view_indices,
+    select_records_by_shape_1024_voxels,
+)
 
 
 def main() -> int:
@@ -45,6 +49,13 @@ def main() -> int:
     parser.add_argument("--latent-dtype", choices=("float16", "float32"), default=None)
     parser.add_argument("--gpu-memory-target-percent", type=float, default=None)
     parser.add_argument("--timeout-seconds", type=int, default=None)
+    parser.add_argument("--min-shape-1024-voxels", type=int, default=None)
+    parser.add_argument("--max-shape-1024-voxels", type=int, default=None)
+    parser.add_argument(
+        "--partition-name",
+        default=None,
+        help="voxel-range asset partition의 이름; partition 실행에서 필수",
+    )
     arguments = parser.parse_args()
     config, config_path = load_config(arguments.config)
     apply_batch_defaults(arguments, config)
@@ -76,9 +87,33 @@ def main() -> int:
     cuda_visible_devices = require_single_visible_cuda_device()
     manifest = arguments.manifest or stage_root(work_root, "04", "voxelize") / "manifest.jsonl"
     records = successful(read_jsonl(manifest))
+    partitioned = (
+        arguments.min_shape_1024_voxels is not None
+        or arguments.max_shape_1024_voxels is not None
+    )
+    if partitioned:
+        if not arguments.partition_name:
+            parser.error("voxel-range 실행에는 --partition-name이 필요합니다")
+        if "/" in arguments.partition_name or arguments.partition_name in {".", ".."}:
+            parser.error("--partition-name은 단일 경로 이름이어야 합니다")
+        if 1024 not in {int(value) for value in resolutions.split(",")}:
+            parser.error("voxel-range 실행에는 1024 shape resolution이 필요합니다")
+        voxel = stage_root(work_root, "04", "voxelize")
+        records = select_records_by_shape_1024_voxels(
+            records,
+            voxel,
+            view_indices=parse_view_indices(view_indices),
+            minimum=arguments.min_shape_1024_voxels,
+            maximum=arguments.max_shape_1024_voxels,
+        )
     if not records:
-        parser.error("04_voxelize의 성공 asset이 없습니다")
-    instances = output / "instances.txt"
+        print("선택한 voxel-range에 04_voxelize 성공 asset이 없습니다")
+        return 0
+    partition_root = (
+        output / "partitions" / arguments.partition_name
+        if partitioned else output
+    )
+    instances = partition_root / "instances.txt"
     instances.parent.mkdir(parents=True, exist_ok=True)
     instances.write_text("\n".join(record["asset_id"] for record in records) + "\n")
     root = Path(__file__).resolve().parents[3]
@@ -104,9 +139,17 @@ def main() -> int:
     environment = os.environ.copy()
     subprocess.run(command, cwd=root, env=environment, check=True)
     result_records = [dict(record, status="ok", latent_root=str(output)) for record in records]
-    atomic_write_jsonl(output / "manifest.jsonl", result_records)
-    write_stage_info(output, stage="05_encode", config=str(config_path), cuda_visible_devices=cuda_visible_devices, total=len(records), resolutions=resolutions, ss_resolution=ss_resolution, batch_index=batch_index, world_size=arguments.world_size, rank=arguments.rank)
-    print(output / "manifest.jsonl")
+    atomic_write_jsonl(partition_root / "manifest.jsonl", result_records)
+    write_stage_info(
+        partition_root, stage="05_encode", config=str(config_path),
+        cuda_visible_devices=cuda_visible_devices, total=len(records),
+        resolutions=resolutions, ss_resolution=ss_resolution,
+        batch_index=batch_index, world_size=arguments.world_size,
+        rank=arguments.rank, partition_name=arguments.partition_name,
+        min_shape_1024_voxels=arguments.min_shape_1024_voxels,
+        max_shape_1024_voxels=arguments.max_shape_1024_voxels,
+    )
+    print(partition_root / "manifest.jsonl")
     return 0
 
 
