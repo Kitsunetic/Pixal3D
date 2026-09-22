@@ -33,7 +33,7 @@ stages:
     resolutions: "256,512,1024"
     ss_resolution: 64
     view_indices: "0-1"
-    loader_workers: 4
+    loader_workers: 8
     saver_workers: 2
     micro_batch_sizes: "64:16,256:4,512:2,1024:1"
     latent_dtype: float16
