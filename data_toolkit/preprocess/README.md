@@ -9,7 +9,7 @@
   ObjaverseXL_sketchfab/ObjaverseXL_sketchfab-00000/batch000/
 ```
 
-NS3 shared root에 01~05 intermediate를 저장하므로 다른 node가 같은 batch를 이어서 실행하거나 world-size를 바꾸어 재시작할 수 있다. 아주 작은 일시 파일만 필요할 때에는 `/dev/shm/tmp`를 사용할 수 있다. 기존 NS2 `prepared`는 legacy 결과를 판정하는 read-only 입력이며, 새 결과는 `/home/rvi/ns3/youngwoo/pixal3d/prepared-v2/...`로만 publish한다. 두 결과 tree를 물리적으로 합치지 않는다.
+NS3 shared root에 01~05 intermediate를 저장하므로 다른 node가 같은 batch를 이어서 실행하거나 world-size를 바꾸어 재시작할 수 있다. 아주 작은 일시 파일만 필요할 때에는 `/dev/shm/tmp`를 사용할 수 있다. 06은 큰 tar를 각 서버의 로컬 `./data/preprocess_finalize`에 임시 생성하고, 학습 Dataset 검증을 통과한 batch만 기존 NS2 `prepared`에 합친다.
 
 ## 단계
 
@@ -20,14 +20,14 @@ NS3 shared root에 01~05 intermediate를 저장하므로 다른 node가 같은 b
 | `03_render` | GLB를 조건 뷰로 렌더링 | manifest, GLB | `03_render/renders_cond` |
 | `04_voxelize` | mesh/PBR dump와 camera transform을 voxel로 변환 | dump, render | `04_voxelize/{dual_grid_view_*,pbr_voxels_view_fix_*}` |
 | `05_encode` | shape → SS → PBR encoder를 한 CUDA 프로세스에서 실행. VXZ 입력은 PyTorch Dataset/DataLoader로 prefetch하고, latent 저장은 별도 saver queue/thread가 담당 | voxel | `05_encode/{shape,ss,pbr}` |
-| `06_finalize` | latent 트리를 확인하고 선택적으로 별도 prepared-v2에 publish | encode | `06_finalize/report.json`, 선택적 `prepared-v2` |
+| `06_finalize` | 로컬에서 8개 tar 생성·학습 loader 확인 후 선택적으로 NS2 prepared에 합침 | render, encode | `06_finalize/report.json`, 선택적 `prepared` tar·manifest·index |
 
 `02_dump`는 PBR dump가 이미 보유한 geometry를 재사용하므로 mesh/PBR를 따로 import하거나 triangulate하지 않는다. Blender image extraction과 quantization까지 CPU-only로 수행한다. `03_render`는 dump를 참조하지 않고 rendering만 한다.
 
-## 최종 `prepared` 구조
+## `prepared` 구조
 
-중간 단계 산출물은 NS3 shared `work_root`에 둔다. 최종 학습용 결과만
-`06_finalize --publish`에서 기존 학습 loader와 호환되는 `prepared` layout으로 publish한다.
+중간 단계 산출물은 NS3 shared `work_root`에 둔다. `06_finalize --publish`는
+로컬 임시 경로에서 검증한 tar 결과를 기존 NS2 `prepared`에 합친다.
 한 batch는 아래의 **8개 family tar와 각 tar의 manifest**가 모두 검증된 경우에만 완료다.
 
 ```text
@@ -45,31 +45,32 @@ member의 SHA-256, member 크기, 포함 asset 목록, 생성 설정/commit 정�
 | prepared 경로 | tar에 들어가는 내용 | 원본 shared stage |
 | --- | --- | --- |
 | `common/.../<batch>.tar` | asset별 `renders_cond/<asset>/{000..007}.png`, `transforms.json` | `03_render/renders_cond` |
-| `ss/64/.../<batch>.tar` | `ss/64/<asset>/view{00,01}.npz` 및 각 scale JSON | `05_encode/ss` |
-| `shape/<resolution>/.../<batch>.tar` | `shape/<resolution>/<asset>/view{00,01}.npz` 및 각 scale JSON | `05_encode/shape` |
-| `pbr/<resolution>/.../<batch>.tar` | `pbr/<resolution>/<asset>/view{00,01}.npz` 및 각 scale JSON | `05_encode/pbr` |
+| `ss/64/.../<batch>.tar` | `ss_latents/<model>/<asset>/view{00,01}.npz` 및 각 scale JSON | `05_encode/ss` |
+| `shape/<resolution>/.../<batch>.tar` | `shape_latents/<model>/<asset>/view{00,01}.npz` 및 각 scale JSON | `05_encode/shape` |
+| `pbr/<resolution>/.../<batch>.tar` | `pbr_latents/<model>/<asset>/view{00,01}.npz` 및 각 scale JSON | `05_encode/pbr` |
 | `index/<source>/<shard>.json` | batch별 8개 tar와 manifest의 상대 경로·checksum·완료 정보 | `06_finalize`가 마지막에 갱신 |
 
-`common`의 포함 asset은 모든 manifest asset이 아니라, `SS-64`, shape, PBR 중 적어도
-하나의 최종 family에 유효하게 포함된 asset의 합집합이다. family별 성공 범위는 서로
-다를 수 있으므로 `06_finalize`가 각 출력 파일을 검증해 확정한다.
+현재 06은 04 성공 asset 모두에 대해 8개 family와 모든 view가 완전해야 publish한다.
+하나라도 누락되면 부분 tar를 발행하지 않는다.
 
-publish 순서는 다음과 같다.
+publish 순서는 다음과 같다. 기존 패커와 같이 tar는 PAX 형식의 비압축 `.tar`다.
 
-1. shared `06_finalize` staging에서 8개 tar와 manifest를 생성하고 검증한다.
-2. 검증된 tar와 manifest만 `prepared`에 원자적으로 publish한다.
-3. source/shard lock 아래에서 8개 family가 모두 존재하고 검증된 뒤에만 `index`를 갱신한다.
+1. 로컬 `paths.local_temp_root` 아래에서 8개 tar와 manifest를 생성하고 SHA-256 검증한다.
+2. tar에서 실제 어셋 하나를 꺼내 control metadata의 aesthetic score와 임시 metadata projection으로 7개 학습 설정의 Dataset/DataLoader를 검사한다. 두 view를 각각 직접 읽어 loader의 재귀 재시도에 의한 무한 대기를 피한다. 이 projection은 검사에만 쓰며 tar에 넣지 않는다.
+3. 통과한 tar를 NS2 `prepared` 내부 임시 staging으로 복사하고 checksum을 다시 확인한다.
+4. source/shard lock 아래에서 기존 batch와 파일 충돌이 없는지 확인한 뒤 8개 family를 발행하고, 기존 index 항목을 보존한 채 새 batch를 마지막에 추가한다.
 
-따라서 `index`에 batch가 기록된 것은 해당 batch가 학습에 바로 사용할 수 있는 완결된
-결과라는 뜻이다. `02_dump`의 mesh/PBR pickle, voxel, renderer의 임시 산출물은
-`prepared`에 넣지 않는다.
+따라서 `index`에 batch가 기록된 것은 8개 family tar의 발행이 끝났다는 뜻이다.
+`02_dump`의 mesh/PBR pickle와 voxel은 `prepared`에 넣지 않는다. 기존 batch를 덮어쓰지 않는다.
 
 `qualification/`과 `recovery/`는 기존 scheduler 기반 pipeline의 gate/checkpoint
 경로다. v2 단계형 workflow는 이 두 경로를 생성하거나 사용하지 않는다.
 
-> 현재 `06_finalize` 구현은 `prepared-v2`로 `05_encode` 트리를 복사하는 과도기
-> 동작이다. 위 legacy-compatible 8-family pack 및 `index` publication은 `06`에
-> 구현할 목표 contract이며, 구현 전에는 기존 학습 loader와 호환되지 않는다.
+학습 loader 검사는 batch 중 학습 조건을 충족하는 한 어셋의 두 view에 대한 smoke test다.
+모든 어셋의 시각적 품질 심사나 전체 학습용 `metadata.csv` 생성은 별도 작업이다.
+1024 PBR 학습 설정의 `full_pbr` texture-count 필터는 이 임시 metadata projection에
+원본 texture-count 열이 없어 검사하지 않는다.
+v2 설정 해시는 기존 production 설정 해시와 다를 수 있다.
 
 ## 설정
 
@@ -79,8 +80,9 @@ publish 순서는 다음과 같다.
 | --- | --- |
 | `paths.control_root` | control shard와 metadata 입력 경로 |
 | `paths.work_root` | NS3 shared 단계별 작업 출력 루트 (`01`~`06`) |
-| `paths.prepared_root` | `06_finalize --publish`의 최종 publish 대상 |
-| `paths.existing_prepared_root` | 기존 production `prepared/index`를 읽어 이미 완결된 legacy batch를 제외하는 경로 |
+| `paths.prepared_root` | 검증된 family tar·manifest·index를 합칠 NS2 `prepared` 경로 |
+| `paths.existing_prepared_root` | 이미 완결된 `prepared/index` batch를 제외하는 경로. 일반적으로 `prepared_root`와 동일 |
+| `paths.local_temp_root` | 06의 로컬 tar·학습 loader 임시 검사 경로. 완료/실패 뒤 batch 임시 디렉터리 삭제 |
 | `raw.root`, `raw.glb_roots` | 압축 해제된 raw GLB tree. 기본값은 새 `glbs_direct`와 archive 밖 기존 direct GLB가 있는 `glbs`를 함께 읽는다 |
 | `stages.*` | render 해상도, voxel 해상도/view, encoder DataLoader·microbatch 설정 |
 
@@ -91,7 +93,9 @@ publish 순서는 다음과 같다.
 paths:
   control_root: /your/control
   work_root: /your/local-work
-  prepared_root: /your/prepared-v2
+  existing_prepared_root: /your/prepared
+  prepared_root: /your/prepared
+  local_temp_root: ./data/preprocess_finalize
 raw:
   mode: direct_glb
   root: /your/raw-parent
@@ -113,8 +117,7 @@ shared index를 재생성한다. archive record가 남은 index는 01 단계가 
 stage는 `batch_index % world_size == rank`가 아니면 실행을 거부한다. 완료 여부와
 관계없이 전체 목록을 기준으로 index를 계산하므로 재시작해도 분할이 변하지 않는다.
 
-중간 산출물은 NS3 shared `work_root`에 남긴다. 다른 node도 같은 완료된 stage 결과를 읽을 수 있다. legacy NS2 `prepared`와 completion marker가 있는 NS3 `prepared-v2` batch는
-모든 stage 및 rank launcher가 skip한다.
+중간 산출물은 NS3 shared `work_root`에 남긴다. 다른 node도 같은 완료된 stage 결과를 읽을 수 있다. NS2 `prepared/index`에 완료된 batch는 모든 stage 및 rank launcher가 skip한다.
 
 GPU stage(`03`, `05`)는 `CUDA_VISIBLE_DEVICES`로 정확히 한 device만 지정한다.
 `02_dump`는 CPU-only다.

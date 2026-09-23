@@ -92,8 +92,10 @@ rank 재분배다. 이 단계의 GPU VRAM은 전처리 점유가 아니다.
 
 ## 06_finalize
 
-아직 fleet 실행 또는 `prepared-v2` publish를 시작하지 않았다. 05 latent 완료 뒤
-검증 및 publish를 수행할 단계다.
+2026-09-23에 `ObjaverseXL_sketchfab-00000/batch010` 한 배치의 8개 tar를
+NS2 `prepared-v2`에 시험 게시하여 checksum과 실제 학습 Dataset 로드를 확인했다.
+이후 06은 로컬 임시 tar 생성·학습 loader 검사 뒤 기존 NS2 `prepared`에 합치는
+방식으로 변경했다. 새 방식의 production `prepared` 게시 또는 fleet 실행은 아직 하지 않았다.
 
 ## 재현 시 확인 순서
 

@@ -25,5 +25,5 @@ CPU-only 01/02만 수행하려면 다음처럼 명시한다.
 ```
 
 동일한 `(world_size, rank)`는 한 번만 실행해야 한다. world size를 바꾼 재실행은 legacy `prepared`와
-completion marker가 있는 NS3 prepared-v2 batch를 자동으로 건너뛰며, shared work root의 완료된
+NS2 prepared index에 완료된 batch를 자동으로 건너뛰며, shared work root의 완료된
 stage 결과를 재사용한다.

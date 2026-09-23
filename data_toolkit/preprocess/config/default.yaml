@@ -8,9 +8,10 @@ batch:
 paths:
   control_root: /home/rvi/ns2/youngwoo/pixal3d/control
   existing_prepared_root: /home/rvi/ns2/youngwoo/pixal3d/prepared
-  # NS2 legacy prepared는 read-only로 유지한다. v2 intermediate와 publish 결과는 NS3에 분리한다.
+  # 01~05 intermediate는 NS3, 06 tar staging은 로컬, 검증된 결과는 NS2 prepared에 합친다.
   work_root: /home/rvi/ns3/youngwoo/pixal3d/preprocess_v2
-  prepared_root: /home/rvi/ns3/youngwoo/pixal3d/prepared-v2
+  local_temp_root: ./data/preprocess_finalize
+  prepared_root: /home/rvi/ns2/youngwoo/pixal3d/prepared
 
 raw:
   mode: direct_glb

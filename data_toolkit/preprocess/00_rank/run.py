@@ -79,7 +79,7 @@ def main() -> int:
     parser.add_argument("--world-size", type=int, required=True)
     parser.add_argument("--rank", type=int, required=True)
     parser.add_argument("--stages", default=",".join(STAGES))
-    parser.add_argument("--publish", action="store_true", help="06 단계에서 prepared-v2로 publish")
+    parser.add_argument("--publish", action="store_true", help="06 단계에서 학습 loader 검증 뒤 prepared에 합침")
     parser.add_argument("--encode-min-shape-1024-voxels", type=int, default=None)
     parser.add_argument("--encode-max-shape-1024-voxels", type=int, default=None)
     parser.add_argument("--encode-partition-name", default=None)
@@ -123,6 +123,7 @@ def main() -> int:
             stage for stage in stages
             if (
                 (encode_partitioned and stage == "05")
+                or (arguments.publish and stage == "06")
                 or not stage_complete(config, source, shard, batch, stage)
             )
         )

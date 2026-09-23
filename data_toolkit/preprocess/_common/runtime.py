@@ -18,8 +18,7 @@ DEFAULT_SOURCE = "ObjaverseXL_sketchfab"
 DEFAULT_SHARD = "ObjaverseXL_sketchfab-00000"
 DEFAULT_BATCH = "batch000"
 DEFAULT_WORK_ROOT = Path("/home/rvi/ns3/youngwoo/pixal3d/preprocess_v2")
-DEFAULT_PREPARED_ROOT = Path("/home/rvi/ns3/youngwoo/pixal3d/prepared-v2")
-PREPARED_V2_COMPLETION_FILE = "completion.json"
+DEFAULT_PREPARED_ROOT = Path("/home/rvi/ns2/youngwoo/pixal3d/prepared")
 LEGACY_PREPARED_FAMILIES = frozenset(
     {
         "common",
@@ -146,10 +145,11 @@ def require_batch_ownership(arguments: Any, config: Mapping[str, Any]) -> int:
 
 
 def legacy_prepared_batch_complete(
-    config: Mapping[str, Any], source: str, shard: str, batch: str
+    config: Mapping[str, Any], source: str, shard: str, batch: str,
+    prepared_root: Path | None = None,
 ) -> bool:
-    """Return whether the legacy production prepared index proves a full batch pack."""
-    root = Path(config_get(config, "paths", "existing_prepared_root"))
+    """Return whether the prepared index proves a full batch pack."""
+    root = prepared_root or Path(config_get(config, "paths", "existing_prepared_root"))
     index_path = root / "index" / source / f"{shard}.json"
     if not index_path.is_file():
         return False
@@ -167,38 +167,12 @@ def legacy_prepared_batch_complete(
     return isinstance(entries, Mapping) and set(entries) == LEGACY_PREPARED_FAMILIES
 
 
-def prepared_v2_batch_complete(
-    config: Mapping[str, Any], source: str, shard: str, batch: str,
-    prepared_root: Path | None = None,
-) -> bool:
-    """Return whether an atomically published v2 batch has its completion marker."""
-    root = prepared_root or Path(config_get(config, "paths", "prepared_root"))
-    target = root / source / shard / batch
-    marker = target / PREPARED_V2_COMPLETION_FILE
-    if not marker.is_file():
-        return False
-    try:
-        completion = json.loads(marker.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        raise RuntimeError(f"invalid prepared-v2 completion marker: {marker}: {error}") from error
-    return (
-        completion.get("schema") == "pixal3d-preprocess-v2-completion-v1"
-        and completion.get("source") == source
-        and completion.get("shard") == shard
-        and completion.get("batch") == batch
-        and isinstance(completion.get("assets"), int)
-        and all((target / name).is_dir() for name in ("shape", "pbr", "ss"))
-    )
-
-
 def completed_batch_reason(
     config: Mapping[str, Any], source: str, shard: str, batch: str,
     prepared_root: Path | None = None,
 ) -> str | None:
-    if legacy_prepared_batch_complete(config, source, shard, batch):
+    if legacy_prepared_batch_complete(config, source, shard, batch, prepared_root):
         return "legacy_prepared"
-    if prepared_v2_batch_complete(config, source, shard, batch, prepared_root):
-        return "prepared_v2"
     return None
 
 

@@ -10,7 +10,8 @@ paths:
   control_root: /root/data2/pixal3d/control
   existing_prepared_root: /root/data2/pixal3d/prepared
   work_root: /root/node17/data/pixal3d/preprocess_v2
-  prepared_root: /root/data2/pixal3d/prepared-v2
+  local_temp_root: ./data/preprocess_finalize
+  prepared_root: /root/data2/pixal3d/prepared
 
 # 기존 container의 내려받은 direct GLB tree를 쓴다.
 raw:

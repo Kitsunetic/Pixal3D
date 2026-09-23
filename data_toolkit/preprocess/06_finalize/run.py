@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""06_finalize: v2 batch 결과를 검증하고 별도 prepared-v2 경로로 publish한다."""
+"""06_finalize: 로컬 tar를 학습 loader로 검증한 뒤 prepared에 합친다."""
 
 from __future__ import annotations
 
 import argparse
-import os
+from dataclasses import replace
+import hashlib
 from pathlib import Path
-import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -21,7 +22,6 @@ from data_toolkit.preprocess._common.runtime import (
     atomic_write_jsonl,
     config_get,
     load_config,
-    PREPARED_V2_COMPLETION_FILE,
     completed_batch_reason,
     read_jsonl,
     resolve_work_root,
@@ -30,10 +30,16 @@ from data_toolkit.preprocess._common.runtime import (
     successful,
     write_stage_info,
 )
-from data_toolkit.preprocess._common.encode_partition import (
-    expected_latent_paths,
-    parse_view_indices,
+from data_toolkit.preprocess._common.encode_partition import parse_view_indices
+from data_toolkit.preprocess._common.finalize_packs import (
+    BatchIdentity,
+    BatchPublication,
+    build_local_packs,
+    family_sources,
+    missing_members,
 )
+from data_toolkit.preprocess._common.finalize_publish import publish_staged
+from data_toolkit.preprocess._common.finalize_training import validate_training_load
 
 
 def main() -> int:
@@ -43,12 +49,15 @@ def main() -> int:
     add_rank_arguments(parser)
     parser.add_argument("--manifest", type=Path, default=None)
     parser.add_argument("--prepared-root", type=Path, default=None)
-    parser.add_argument("--publish", action="store_true", help="검증된 05_encode 결과를 prepared-v2에 publish")
+    parser.add_argument("--local-temp-root", type=Path, default=None)
+    parser.add_argument("--publish", action="store_true", help="학습 loader 검증 뒤 8개 family tar를 prepared에 합침")
     arguments = parser.parse_args()
     config, config_path = load_config(arguments.config)
     apply_batch_defaults(arguments, config)
     batch_index = require_batch_ownership(arguments, config)
     prepared_root = arguments.prepared_root or Path(config_get(config, "paths", "prepared_root"))
+    local_temp_root = arguments.local_temp_root or Path(config_get(config, "paths", "local_temp_root"))
+    control_root = Path(config_get(config, "paths", "control_root"))
     work_root = resolve_work_root(arguments, config)
     output = stage_root(work_root, "06", "finalize")
     skip_reason = completed_batch_reason(
@@ -61,7 +70,6 @@ def main() -> int:
             "batch_index": batch_index, "world_size": arguments.world_size, "rank": arguments.rank,
             "skipped_completed": True, "skip_reason": skip_reason,
             "skipped_existing_prepared": skip_reason == "legacy_prepared",
-            "skipped_published_prepared_v2": skip_reason == "prepared_v2",
         }
         atomic_write_jsonl(output / "manifest.jsonl", [])
         atomic_write_json(output / "report.json", report)
@@ -74,53 +82,69 @@ def main() -> int:
     records = successful(read_jsonl(manifest))
     if not records:
         parser.error("04_voxelize의 성공 asset이 없습니다")
-    encode_root = stage_root(work_root, "05", "encode")
-    required = (encode_root / "shape", encode_root / "pbr", encode_root / "ss")
-    missing = [str(path) for path in required if not path.exists()]
-    if missing:
-        parser.error(f"latent 출력이 누락되었습니다: {missing}")
     encode = config_get(config, "stages", "encode")
-    expected = expected_latent_paths(
-        records,
-        encode_root,
-        resolutions=tuple(int(value) for value in str(encode["resolutions"]).split(",")),
-        ss_resolution=int(encode["ss_resolution"]),
-        view_indices=parse_view_indices(str(encode["view_indices"])),
+    if (
+        tuple(int(value) for value in str(encode["resolutions"]).split(",")) != (256, 512, 1024)
+        or int(encode["ss_resolution"]) != 64
+        or parse_view_indices(str(encode["view_indices"])) != (0, 1)
+    ):
+        parser.error("06 pack layout은 shape/PBR 256,512,1024, SS 64, view 0-1을 요구합니다")
+    publication = BatchPublication(
+        identity=BatchIdentity(arguments.source, arguments.shard, arguments.batch),
+        work_root=work_root,
+        prepared_root=prepared_root,
+        control_root=control_root,
+        assets=tuple(sorted(record["asset_id"] for record in records)),
+        batch_assets=tuple(sorted(
+            (control_root / "shards" / arguments.source / arguments.shard / f"{arguments.batch}.txt")
+            .read_text(encoding="utf-8").splitlines()
+        )),
+        config_hash=hashlib.sha256(config_path.read_bytes()).hexdigest(),
+        tool_commit="",
     )
-    absent = [path for path in expected if not path.is_file()]
+    absent = missing_members(family_sources(publication))
     if absent:
         examples = ", ".join(str(path) for path in absent[:3])
         parser.error(
-            f"05_encode latent이 불완전합니다: {len(absent)}개 파일 누락 "
+            f"03_render/05_encode pack 입력이 불완전합니다: {len(absent)}개 파일 누락 "
             f"(예: {examples})"
         )
 
     report = {
         "stage": "06_finalize", "source": arguments.source, "shard": arguments.shard,
-        "batch": arguments.batch, "assets": len(records), "encode_root": str(encode_root),
+        "batch": arguments.batch, "assets": len(records),
         "published": False, "batch_index": batch_index,
         "world_size": arguments.world_size, "rank": arguments.rank,
     }
     if arguments.publish:
-        target = prepared_root / arguments.source / arguments.shard / arguments.batch
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if target.exists():
-            parser.error(f"기존 publish 결과가 있습니다: {target}")
-        with tempfile.TemporaryDirectory(dir=target.parent, prefix=f".{arguments.batch}.") as temporary_dir:
-            temporary = Path(temporary_dir) / arguments.batch
-            shutil.copytree(encode_root, temporary)
-            atomic_write_json(
-                temporary / PREPARED_V2_COMPLETION_FILE,
-                {
-                    "schema": "pixal3d-preprocess-v2-completion-v1",
-                    "source": arguments.source,
-                    "shard": arguments.shard,
-                    "batch": arguments.batch,
-                    "assets": len(records),
-                },
-            )
-            os.replace(temporary, target)
-        report.update(published=True, prepared_path=str(target))
+        repository = Path(__file__).resolve().parents[3]
+        tool_commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repository,
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain", "--", "data_toolkit/preprocess"],
+            cwd=repository, check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        if dirty:
+            tool_commit += "+dirty"
+        publication = replace(publication, tool_commit=tool_commit)
+        local_temp_root = local_temp_root.resolve()
+        local_temp_root.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix=f".{arguments.shard}-{arguments.batch}.", dir=local_temp_root,
+        ) as temporary:
+            staging = Path(temporary)
+            entries = build_local_packs(publication, staging / "packs")
+            training = validate_training_load(publication, entries, staging / "training")
+            entries = publish_staged(publication, entries)
+        report.update(
+            published=True, loader_validated=True,
+            loader_sample_asset=training.sample_asset,
+            loader_configs=list(training.configs_checked),
+            prepared_path=str(prepared_root),
+            packs={family: entry["pack"] for family, entry in entries.items()},
+        )
     atomic_write_jsonl(output / "manifest.jsonl", records)
     atomic_write_json(output / "report.json", report)
     write_stage_info(output, config=str(config_path), **report)

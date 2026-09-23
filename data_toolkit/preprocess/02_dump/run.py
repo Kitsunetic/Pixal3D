@@ -89,7 +89,6 @@ def main() -> int:
             batch_index=batch_index, world_size=arguments.world_size, rank=arguments.rank,
             skipped_completed=True, skip_reason=skip_reason,
             skipped_existing_prepared=skip_reason == "legacy_prepared",
-            skipped_published_prepared_v2=skip_reason == "prepared_v2",
         )
         print(output / "manifest.jsonl")
         return 0
