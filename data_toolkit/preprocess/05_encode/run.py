@@ -30,8 +30,9 @@ from data_toolkit.preprocess._common.runtime import (
 )
 from data_toolkit.preprocess._common.encode_partition import (
     exclude_configured_assets,
+    expected_latent_paths,
     parse_view_indices,
-    select_records_by_shape_1024_voxels,
+    select_records_with_shape_1024_voxels,
 )
 
 
@@ -98,15 +99,46 @@ def main() -> int:
             parser.error("--partition-name은 단일 경로 이름이어야 합니다")
         if 1024 not in {int(value) for value in resolutions.split(",")}:
             parser.error("voxel-range 실행에는 1024 shape resolution이 필요합니다")
-        voxel = stage_root(work_root, "04", "voxelize")
-        records = select_records_by_shape_1024_voxels(
-            records,
-            voxel,
-            view_indices=parse_view_indices(view_indices),
+    voxel = stage_root(work_root, "04", "voxelize")
+    views = parse_view_indices(view_indices)
+    max_new_voxels = encode.get("max_new_shape_1024_voxels")
+    if max_new_voxels is not None and (type(max_new_voxels) is not int or max_new_voxels <= 0):
+        parser.error("max_new_shape_1024_voxels는 양의 정수여야 합니다")
+    selected = (
+        select_records_with_shape_1024_voxels(
+            records, voxel, view_indices=views,
             minimum=arguments.min_shape_1024_voxels,
             maximum=arguments.max_shape_1024_voxels,
         )
-    if not records:
+        if partitioned or max_new_voxels is not None
+        else [(record, 0) for record in records]
+    )
+    resolutions_tuple = tuple(int(value) for value in resolutions.split(","))
+    records_to_encode = []
+    completed_oversized = []
+    skipped_oversized = []
+    for record, count in selected:
+        if max_new_voxels is None or count <= max_new_voxels:
+            records_to_encode.append(record)
+        else:
+            paths = expected_latent_paths(
+                [record], output,
+                resolutions=resolutions_tuple, ss_resolution=ss_resolution,
+                view_indices=views,
+            )
+            if all(
+                path.is_file()
+                and path.with_name(f"{path.stem}_scale.json").is_file()
+                for path in paths
+            ):
+                completed_oversized.append(record)
+            else:
+                skipped_oversized.append({
+                    "asset_id": record["asset_id"], "status": "skipped_oversized",
+                    "reason": "max_new_shape_1024_voxels",
+                    "shape_1024_voxels": count,
+                })
+    if not selected:
         print("선택한 voxel-range에 04_voxelize 성공 asset이 없습니다")
         return 0
     partition_root = (
@@ -115,9 +147,8 @@ def main() -> int:
     )
     instances = partition_root / "instances.txt"
     instances.parent.mkdir(parents=True, exist_ok=True)
-    instances.write_text("\n".join(record["asset_id"] for record in records) + "\n")
+    instances.write_text("\n".join(record["asset_id"] for record in records_to_encode) + "\n")
     root = Path(__file__).resolve().parents[3]
-    voxel = stage_root(work_root, "04", "voxelize")
     command = [
         # Module execution preserves the repository root on sys.path.  Running
         # the file directly makes ``data_toolkit`` unavailable to the bundle.
@@ -137,12 +168,18 @@ def main() -> int:
         "--timeout_seconds", str(timeout_seconds),
     ]
     environment = os.environ.copy()
-    subprocess.run(command, cwd=root, env=environment, check=True)
-    result_records = [dict(record, status="ok", latent_root=str(output)) for record in records]
+    if records_to_encode:
+        subprocess.run(command, cwd=root, env=environment, check=True)
+    result_records = [
+        dict(record, status="ok", latent_root=str(output))
+        for record in (*records_to_encode, *completed_oversized)
+    ]
+    result_records.extend(skipped_oversized)
     atomic_write_jsonl(partition_root / "manifest.jsonl", result_records)
     write_stage_info(
         partition_root, stage="05_encode", config=str(config_path),
-        cuda_visible_devices=cuda_visible_devices, total=len(records),
+        cuda_visible_devices=cuda_visible_devices, total=len(records_to_encode) + len(completed_oversized),
+        skipped_oversized=len(skipped_oversized),
         resolutions=resolutions, ss_resolution=ss_resolution,
         batch_index=batch_index, world_size=arguments.world_size,
         rank=arguments.rank, partition_name=arguments.partition_name,

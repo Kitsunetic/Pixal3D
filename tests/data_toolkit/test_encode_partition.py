@@ -73,6 +73,71 @@ def test_stage_05_does_not_encode_configured_excluded_asset(tmp_path: Path) -> N
     assert not list((work / "05_encode").rglob(f"{excluded}/view00.npz"))
 
 
+def test_stage_05_skips_only_unfinished_assets_above_voxel_limit(tmp_path: Path) -> None:
+    repository = Path(__file__).resolve().parents[2]
+    source, shard, batch = "ObjaverseXL_sketchfab", "ObjaverseXL_sketchfab-00000", "batch000"
+    at_limit, unfinished, complete, missing_scale = (letter * 64 for letter in "abcd")
+    control = tmp_path / "control"
+    batch_file = control / "shards" / source / shard / f"{batch}.txt"
+    batch_file.parent.mkdir(parents=True)
+    batch_file.write_text("\n".join((at_limit, unfinished, complete, missing_scale)) + "\n")
+    work = tmp_path / "work" / source / shard / batch
+    voxel = work / "04_voxelize"
+    voxel.mkdir(parents=True)
+    (voxel / "manifest.jsonl").write_text("".join(
+        json.dumps({"asset_id": asset, "status": "ok"}) + "\n"
+        for asset in (at_limit, unfinished, complete, missing_scale)
+    ))
+    for asset, count in ((at_limit, 15_000_000), (unfinished, 15_000_001),
+                         (complete, 20_000_000), (missing_scale, 20_000_001)):
+        for view in (0, 1):
+            _write_vxz_header(voxel / "dual_grid_view_1024" / asset / f"view{view:02d}.vxz", count)
+    encode = work / "05_encode"
+    for asset in (complete, missing_scale):
+        for path in expected_latent_paths(
+            [{"asset_id": asset}], encode,
+            resolutions=(256, 512, 1024), ss_resolution=64, view_indices=(0, 1),
+        ):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"existing")
+            if asset == complete:
+                path.with_name(f"{path.stem}_scale.json").write_text("{}")
+    config = tmp_path / "config.yaml"
+    config.write_text(yaml.safe_dump({
+        "dataset": {"source": source},
+        "batch": {"shard": shard, "name": batch},
+        "paths": {"control_root": str(control), "work_root": str(tmp_path / "work"),
+                  "existing_prepared_root": str(tmp_path / "prepared")},
+        "stages": {"encode": {
+            "resolutions": "256,512,1024", "ss_resolution": 64, "view_indices": "0-1",
+            "loader_workers": 1, "saver_workers": 1, "micro_batch_sizes": "64:1,256:1,512:1,1024:1",
+            "latent_dtype": "float16", "gpu_memory_target_percent": 90.0,
+            "timeout_seconds": 30, "max_new_shape_1024_voxels": 15_000_000,
+        }},
+    }))
+    environment = os.environ | {
+        "CUDA_VISIBLE_DEVICES": "0",
+        "PIXAL3D_LEAF_WORKER": str(repository / "tests/data_toolkit/fixtures/fake_leaf_worker.py"),
+    }
+
+    result = subprocess.run(
+        [sys.executable, str(repository / "data_toolkit/preprocess/05_encode/run.py"),
+         "--config", str(config), "--world-size", "1", "--rank", "0"],
+        cwd=repository, env=environment, capture_output=True, text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (encode / "instances.txt").read_text().splitlines() == [at_limit]
+    records = [json.loads(line) for line in (encode / "manifest.jsonl").read_text().splitlines()]
+    assert [(record["asset_id"], record["status"]) for record in records] == [
+        (at_limit, "ok"), (complete, "ok"), (unfinished, "skipped_oversized"),
+        (missing_scale, "skipped_oversized"),
+    ]
+    assert [record["shape_1024_voxels"] for record in records[-2:]] == [
+        15_000_001, 20_000_001,
+    ]
+
+
 def _write_vxz_header(path: Path, num_voxels: int) -> None:
     header = json.dumps({"num_voxel": num_voxels}).encode("utf-8")
     path.parent.mkdir(parents=True, exist_ok=True)

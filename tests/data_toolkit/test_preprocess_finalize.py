@@ -213,6 +213,33 @@ def test_finalize_excludes_configured_asset_without_its_latents(tmp_path: Path) 
         assert packed["included_asset_sha256s"] == [ASSET]
 
 
+def test_finalize_excludes_stage_05_oversized_asset(tmp_path: Path) -> None:
+    config, work, prepared = _fixture(tmp_path)
+    skipped = "b" * 64
+    with (work / "04_voxelize/manifest.jsonl").open("a") as stream:
+        stream.write(json.dumps({"asset_id": skipped, "status": "ok"}) + "\n")
+    (tmp_path / "control/shards" / SOURCE / SHARD / f"{BATCH}.txt").write_text(
+        f"{ASSET}\n{skipped}\n"
+    )
+    partition = work / "05_encode/partitions/n17-high"
+    partition.mkdir(parents=True)
+    (partition / "manifest.jsonl").write_text(json.dumps({
+        "asset_id": skipped, "status": "skipped_oversized",
+        "shape_1024_voxels": 15_000_001,
+    }) + "\n")
+
+    result = _run(config)
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads((work / "06_finalize/report.json").read_text())
+    assert report["assets"] == 1
+    index = json.loads((prepared / "index" / SOURCE / f"{SHARD}.json").read_text())
+    for entry in index["batches"][BATCH].values():
+        packed = json.loads((prepared / entry["manifest"]).read_text())
+        assert packed["asset_sha256s"] == [ASSET, skipped]
+        assert packed["included_asset_sha256s"] == [ASSET]
+
+
 def test_finalize_does_not_publish_when_training_loader_rejects_latent(tmp_path: Path) -> None:
     # Given
     config, work, prepared = _fixture(tmp_path)

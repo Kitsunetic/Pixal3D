@@ -99,14 +99,30 @@ def select_records_by_shape_1024_voxels(
     minimum: int | None = None,
     maximum: int | None = None,
 ) -> list[Mapping[str, str]]:
-    """Keep records whose largest 1024 shape view is in the inclusive range."""
+    return [
+        record for record, _ in select_records_with_shape_1024_voxels(
+            records, voxel_root, view_indices=view_indices,
+            minimum=minimum, maximum=maximum,
+        )
+    ]
+
+
+def select_records_with_shape_1024_voxels(
+    records: Iterable[Mapping[str, str]],
+    voxel_root: Path,
+    *,
+    view_indices: tuple[int, ...],
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> list[tuple[Mapping[str, str], int]]:
+    """Select assets by voxel range while retaining their measured maximum."""
     if minimum is not None and (type(minimum) is not int or minimum < 0):
         raise ValueError("minimum voxel count must be a non-negative integer")
     if maximum is not None and (type(maximum) is not int or maximum < 0):
         raise ValueError("maximum voxel count must be a non-negative integer")
     if minimum is not None and maximum is not None and minimum > maximum:
         raise ValueError("minimum voxel count must not exceed maximum voxel count")
-    selected: list[Mapping[str, str]] = []
+    selected: list[tuple[Mapping[str, str], int]] = []
     for record in records:
         asset_id = record.get("asset_id")
         if asset_id is None:
@@ -117,8 +133,23 @@ def select_records_by_shape_1024_voxels(
         if (minimum is None or count >= minimum) and (
             maximum is None or count <= maximum
         ):
-            selected.append(record)
+            selected.append((record, count))
     return selected
+
+
+def skipped_oversized_asset_ids(encode_root: Path) -> set[str]:
+    """Read successful stage-05 manifests for assets omitted by the voxel cap."""
+    manifests = [encode_root / "manifest.jsonl"]
+    manifests.extend(sorted((encode_root / "partitions").glob("*/manifest.jsonl")))
+    skipped: set[str] = set()
+    for manifest in manifests:
+        if not manifest.is_file():
+            continue
+        for line in manifest.read_text().splitlines():
+            record = json.loads(line)
+            if record.get("status") == "skipped_oversized":
+                skipped.add(record["asset_id"])
+    return skipped
 
 
 def expected_latent_paths(

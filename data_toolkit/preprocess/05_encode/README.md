@@ -47,3 +47,8 @@ partition manifest가 아니라 04의 성공 asset 중 제외되지 않은 ID를
 `stages.encode.exclude_asset_ids`에 기록한 SHA-256 ID는 05 실행 대상과 06 pack 대상에서
 함께 제외된다. 04의 성공 기록과 원본 batch asset 목록은 변경하지 않으며, 제외된 ID는
 최종 pack manifest의 `asset_sha256s`에는 남고 `included_asset_sha256s`에서는 빠진다.
+
+`stages.encode.max_new_shape_1024_voxels`는 새로 인코딩할 asset의 1024 shape voxel
+상한이다. 두 view 중 큰 값이 상한을 넘으면, shape/PBR/SS의 두 view latent 14개와
+각 scale JSON이 이미 있는 asset만 유지하고 재인코딩하지 않는다. 미완료 asset은 partition manifest에
+`skipped_oversized`와 voxel 수를 남긴다. 기존 출력 파일은 삭제하지 않는다.

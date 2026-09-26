@@ -33,6 +33,7 @@ from data_toolkit.preprocess._common.runtime import (
 from data_toolkit.preprocess._common.encode_partition import (
     exclude_configured_assets,
     parse_view_indices,
+    skipped_oversized_asset_ids,
 )
 from data_toolkit.preprocess._common.finalize_packs import (
     BatchIdentity,
@@ -83,6 +84,8 @@ def main() -> int:
     # manifests are operational logs, not the completion truth for a batch.
     manifest = arguments.manifest or stage_root(work_root, "04", "voxelize") / "manifest.jsonl"
     records = exclude_configured_assets(successful(read_jsonl(manifest)), config)
+    skipped_oversized = skipped_oversized_asset_ids(stage_root(work_root, "05", "encode"))
+    records = [record for record in records if record["asset_id"] not in skipped_oversized]
     if not records:
         parser.error("04_voxelize의 성공 asset이 없습니다")
     encode = config_get(config, "stages", "encode")
@@ -116,6 +119,7 @@ def main() -> int:
     report = {
         "stage": "06_finalize", "source": arguments.source, "shard": arguments.shard,
         "batch": arguments.batch, "assets": len(records),
+        "skipped_oversized": len(skipped_oversized),
         "published": False, "batch_index": batch_index,
         "world_size": arguments.world_size, "rank": arguments.rank,
     }
