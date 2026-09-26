@@ -189,6 +189,30 @@ def test_finalize_does_not_publish_when_scale_is_missing(tmp_path: Path) -> None
     assert not list(prepared.rglob("*.tar"))
 
 
+def test_finalize_excludes_configured_asset_without_its_latents(tmp_path: Path) -> None:
+    config, work, prepared = _fixture(tmp_path)
+    excluded = "b" * 64
+    manifest = work / "04_voxelize/manifest.jsonl"
+    with manifest.open("a") as stream:
+        stream.write(json.dumps({"asset_id": excluded, "status": "ok"}) + "\n")
+    batch_file = tmp_path / "control/shards" / SOURCE / SHARD / f"{BATCH}.txt"
+    batch_file.write_text(f"{ASSET}\n{excluded}\n")
+    data = yaml.safe_load(config.read_text())
+    data["stages"]["encode"]["exclude_asset_ids"] = [excluded]
+    config.write_text(yaml.safe_dump(data))
+
+    result = _run(config)
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads((work / "06_finalize/report.json").read_text())
+    assert report["assets"] == 1
+    index = json.loads((prepared / "index" / SOURCE / f"{SHARD}.json").read_text())
+    for entry in index["batches"][BATCH].values():
+        packed = json.loads((prepared / entry["manifest"]).read_text())
+        assert packed["asset_sha256s"] == [ASSET, excluded]
+        assert packed["included_asset_sha256s"] == [ASSET]
+
+
 def test_finalize_does_not_publish_when_training_loader_rejects_latent(tmp_path: Path) -> None:
     # Given
     config, work, prepared = _fixture(tmp_path)

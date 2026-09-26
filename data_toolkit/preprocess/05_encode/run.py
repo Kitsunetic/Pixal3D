@@ -29,6 +29,7 @@ from data_toolkit.preprocess._common.runtime import (
     write_stage_info,
 )
 from data_toolkit.preprocess._common.encode_partition import (
+    exclude_configured_assets,
     parse_view_indices,
     select_records_by_shape_1024_voxels,
 )
@@ -85,7 +86,7 @@ def main() -> int:
         return 0
     cuda_visible_devices = require_single_visible_cuda_device()
     manifest = arguments.manifest or stage_root(work_root, "04", "voxelize") / "manifest.jsonl"
-    records = successful(read_jsonl(manifest))
+    records = exclude_configured_assets(successful(read_jsonl(manifest)), config)
     partitioned = (
         arguments.min_shape_1024_voxels is not None
         or arguments.max_shape_1024_voxels is not None

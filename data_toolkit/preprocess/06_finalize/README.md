@@ -1,6 +1,6 @@
 # 06_finalize
 
-04의 성공 asset마다 03 렌더 8장과 transform, 05의 shape/PBR/SS latent 및 scale JSON을 확인한다.
+04의 성공 asset 중 `stages.encode.exclude_asset_ids`에 없는 asset마다 03 렌더 8장과 transform, 05의 shape/PBR/SS latent 및 scale JSON을 확인한다.
 `--publish`를 주면 8개 family의 비압축 PAX tar와 각 manifest를 로컬
 `./data/preprocess_finalize`에서 만든다. SHA-256 검사 후 tar에서 학습 샘플을 꺼내
 SS·shape·PBR의 실제 Dataset/DataLoader로 7개 학습 설정을 확인한다. 통과하면 NS2

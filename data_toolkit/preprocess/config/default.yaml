@@ -31,6 +31,9 @@ stages:
     view_indices: "0-1"
     native_threads: 4
   encode:
+    # flex_gemm 1024 shape 인코딩 실패 후보(최대 view 84,974,147 voxel); 05/06에서 제외.
+    exclude_asset_ids:
+      - b4860fb771bfab25ef17224e38b729298a20adaa9207e573ced065fa50644129
     resolutions: "256,512,1024"
     ss_resolution: 64
     view_indices: "0-1"

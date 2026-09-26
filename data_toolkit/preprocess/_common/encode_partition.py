@@ -4,8 +4,26 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import struct
 from typing import Iterable, Mapping
+
+
+def exclude_configured_assets(
+    records: Iterable[Mapping[str, str]], config: Mapping[str, object],
+) -> list[Mapping[str, str]]:
+    """Keep successful stage records except explicitly excluded asset IDs."""
+    stages = config.get("stages", {})
+    encode = stages.get("encode", {}) if isinstance(stages, Mapping) else {}
+    excluded = encode.get("exclude_asset_ids", []) if isinstance(encode, Mapping) else []
+    if not isinstance(excluded, list) or any(
+        not isinstance(asset_id, str)
+        or re.fullmatch(r"[0-9a-f]{64}", asset_id) is None
+        for asset_id in excluded
+    ):
+        raise ValueError("stages.encode.exclude_asset_ids must be a list of SHA-256 IDs")
+    excluded_ids = set(excluded)
+    return [record for record in records if record.get("asset_id") not in excluded_ids]
 
 
 def parse_view_indices(value: str) -> tuple[int, ...]:

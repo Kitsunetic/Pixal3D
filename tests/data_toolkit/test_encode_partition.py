@@ -1,12 +1,76 @@
 import json
+import os
 import struct
 from pathlib import Path
+import subprocess
+import sys
+
+import yaml
 
 from data_toolkit.preprocess._common.encode_partition import (
+    exclude_configured_assets,
     expected_latent_paths,
     read_vxz_num_voxels,
     select_records_by_shape_1024_voxels,
 )
+
+
+def test_exclude_configured_assets_removes_only_named_successful_asset() -> None:
+    excluded = "b4860fb771bfab25ef17224e38b729298a20adaa9207e573ced065fa50644129"
+    retained = "a" * 64
+    records = [{"asset_id": excluded, "status": "ok"}, {"asset_id": retained, "status": "ok"}]
+    config = {"stages": {"encode": {"exclude_asset_ids": [excluded]}}}
+
+    assert exclude_configured_assets(records, config) == [records[1]]
+    assert records[0]["status"] == "ok"
+
+
+def test_stage_05_does_not_encode_configured_excluded_asset(tmp_path: Path) -> None:
+    repository = Path(__file__).resolve().parents[2]
+    source = "ObjaverseXL_sketchfab"
+    shard = "ObjaverseXL_sketchfab-00000"
+    batch = "batch000"
+    retained, excluded = "a" * 64, "b" * 64
+    control = tmp_path / "control"
+    batch_file = control / "shards" / source / shard / f"{batch}.txt"
+    batch_file.parent.mkdir(parents=True)
+    batch_file.write_text(f"{retained}\n{excluded}\n")
+    work_base = tmp_path / "work"
+    work = work_base / source / shard / batch
+    voxel = work / "04_voxelize"
+    voxel.mkdir(parents=True)
+    (voxel / "manifest.jsonl").write_text(
+        "".join(json.dumps({"asset_id": asset, "status": "ok"}) + "\n" for asset in (retained, excluded))
+    )
+    config = tmp_path / "config.yaml"
+    config.write_text(yaml.safe_dump({
+        "dataset": {"source": source},
+        "batch": {"shard": shard, "name": batch},
+        "paths": {"control_root": str(control), "work_root": str(work_base), "existing_prepared_root": str(tmp_path / "prepared")},
+        "stages": {"encode": {
+            "resolutions": "256,512,1024", "ss_resolution": 64, "view_indices": "0-1",
+            "loader_workers": 1, "saver_workers": 1, "micro_batch_sizes": "64:1,256:1,512:1,1024:1",
+            "latent_dtype": "float16", "gpu_memory_target_percent": 90.0,
+            "timeout_seconds": 30, "exclude_asset_ids": [excluded],
+        }},
+    }))
+    environment = os.environ | {
+        "CUDA_VISIBLE_DEVICES": "0",
+        "PIXAL3D_LEAF_WORKER": str(repository / "tests/data_toolkit/fixtures/fake_leaf_worker.py"),
+    }
+
+    result = subprocess.run(
+        [sys.executable, str(repository / "data_toolkit/preprocess/05_encode/run.py"),
+         "--config", str(config), "--world-size", "1", "--rank", "0"],
+        cwd=repository, env=environment, capture_output=True, text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (work / "05_encode/instances.txt").read_text().splitlines() == [retained]
+    records = [json.loads(line) for line in (work / "05_encode/manifest.jsonl").read_text().splitlines()]
+    assert [record["asset_id"] for record in records] == [retained]
+    assert (work / "05_encode/shape/shape_latents/shape_enc_next_dc_f16c32_fp16_1024_view" / retained / "view00.npz").is_file()
+    assert not list((work / "05_encode").rglob(f"{excluded}/view00.npz"))
 
 
 def _write_vxz_header(path: Path, num_voxels: int) -> None:

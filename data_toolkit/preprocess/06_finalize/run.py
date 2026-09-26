@@ -30,7 +30,10 @@ from data_toolkit.preprocess._common.runtime import (
     successful,
     write_stage_info,
 )
-from data_toolkit.preprocess._common.encode_partition import parse_view_indices
+from data_toolkit.preprocess._common.encode_partition import (
+    exclude_configured_assets,
+    parse_view_indices,
+)
 from data_toolkit.preprocess._common.finalize_packs import (
     BatchIdentity,
     BatchPublication,
@@ -79,7 +82,7 @@ def main() -> int:
     # 05 may run as disjoint high- and low-voxel partitions.  Its per-partition
     # manifests are operational logs, not the completion truth for a batch.
     manifest = arguments.manifest or stage_root(work_root, "04", "voxelize") / "manifest.jsonl"
-    records = successful(read_jsonl(manifest))
+    records = exclude_configured_assets(successful(read_jsonl(manifest)), config)
     if not records:
         parser.error("04_voxelize의 성공 asset이 없습니다")
     encode = config_get(config, "stages", "encode")

@@ -41,5 +41,9 @@ CUDA_VISIBLE_DEVICES=0 /home/rvi/conda/envs/torch/bin/python \
 `rank=0..5`는 local GPU 0..5에 각각 실행한다. partition의 manifest와 stage 정보는
 `05_encode/partitions/<name>/`에 남고, 실제 latent은 기존 `05_encode/{shape,pbr,ss}`에
 asset별 원자 publish된다. 따라서 두 partition은 동시 실행 가능하다. `06_finalize`는
-partition manifest가 아니라 04의 전체 성공 asset을 기준으로 모든 latent family/view 파일을
+partition manifest가 아니라 04의 성공 asset 중 제외되지 않은 ID를 기준으로 모든 latent family/view 파일을
 검증하므로, 양쪽 partition이 모두 끝난 뒤에만 실행해야 한다.
+
+`stages.encode.exclude_asset_ids`에 기록한 SHA-256 ID는 05 실행 대상과 06 pack 대상에서
+함께 제외된다. 04의 성공 기록과 원본 batch asset 목록은 변경하지 않으며, 제외된 ID는
+최종 pack manifest의 `asset_sha256s`에는 남고 `included_asset_sha256s`에서는 빠진다.

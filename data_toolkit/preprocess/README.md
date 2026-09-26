@@ -50,7 +50,7 @@ member의 SHA-256, member 크기, 포함 asset 목록, 생성 설정/commit 정�
 | `pbr/<resolution>/.../<batch>.tar` | `pbr_latents/<model>/<asset>/view{00,01}.npz` 및 각 scale JSON | `05_encode/pbr` |
 | `index/<source>/<shard>.json` | batch별 8개 tar와 manifest의 상대 경로·checksum·완료 정보 | `06_finalize`가 마지막에 갱신 |
 
-현재 06은 04 성공 asset 모두에 대해 8개 family와 모든 view가 완전해야 publish한다.
+현재 06은 04 성공 asset 중 `stages.encode.exclude_asset_ids`에 없는 ID에 대해 8개 family와 모든 view가 완전해야 publish한다.
 하나라도 누락되면 부분 tar를 발행하지 않는다.
 
 publish 순서는 다음과 같다. 기존 패커와 같이 tar는 PAX 형식의 비압축 `.tar`다.
