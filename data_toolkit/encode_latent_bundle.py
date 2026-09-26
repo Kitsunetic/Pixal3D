@@ -22,6 +22,7 @@ from data_toolkit.pipeline.instance_manifest import (
 class Encoder(Protocol):
     def eval(self) -> "Encoder": ...
     def cuda(self) -> "Encoder": ...
+    def requires_grad_(self, requires_grad: bool = True) -> "Encoder": ...
 
 
 def _parse_resolutions(value: str) -> tuple[int, ...]:
@@ -238,7 +239,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     def cached_loader(model_path: str) -> Encoder:
         encoder = encoders.get(model_path)
         if encoder is None:
-            encoder = original_loader(model_path)
+            encoder = original_loader(model_path).requires_grad_(False)
             encoders[model_path] = encoder
         return encoder
 
