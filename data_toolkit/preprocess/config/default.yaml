@@ -7,11 +7,11 @@ batch:
 
 paths:
   control_root: /home/rvi/ns2/youngwoo/pixal3d/control
-  existing_prepared_root: /home/rvi/ns2/youngwoo/pixal3d/prepared
-  # 01~05 intermediate는 NS3, 06 tar staging은 로컬, 검증된 결과는 NS2 prepared에 합친다.
+  existing_prepared_root: /home/rvi/ns4/youngwoo/pixal3d/prepared
+  # 01~05 intermediate는 NS3, 06 tar staging은 로컬, 검증된 결과는 NS4 prepared에 합친다.
   work_root: /home/rvi/ns3/youngwoo/pixal3d/preprocess_v2
   local_temp_root: ./data/preprocess_finalize
-  prepared_root: /home/rvi/ns2/youngwoo/pixal3d/prepared
+  prepared_root: /home/rvi/ns4/youngwoo/pixal3d/prepared
 
 raw:
   mode: direct_glb

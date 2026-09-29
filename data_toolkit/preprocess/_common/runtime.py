@@ -18,7 +18,7 @@ DEFAULT_SOURCE = "ObjaverseXL_sketchfab"
 DEFAULT_SHARD = "ObjaverseXL_sketchfab-00000"
 DEFAULT_BATCH = "batch000"
 DEFAULT_WORK_ROOT = Path("/home/rvi/ns3/youngwoo/pixal3d/preprocess_v2")
-DEFAULT_PREPARED_ROOT = Path("/home/rvi/ns2/youngwoo/pixal3d/prepared")
+DEFAULT_PREPARED_ROOT = Path("/home/rvi/ns4/youngwoo/pixal3d/prepared")
 LEGACY_PREPARED_FAMILIES = frozenset(
     {
         "common",

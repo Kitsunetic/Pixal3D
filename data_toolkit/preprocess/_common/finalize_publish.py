@@ -110,14 +110,14 @@ def _copy_verified(source: Path, destination: Path, expected_sha256: str) -> Non
         target_stream.flush()
         os.fsync(target_stream.fileno())
     if file_sha(destination) != expected_sha256:
-        raise PublicationError(destination, "NS2 staged copy checksum mismatch")
+        raise PublicationError(destination, "prepared staged copy checksum mismatch")
 
 
 def publish_staged(
     publication: BatchPublication,
     staged: Mapping[str, StagedPack],
 ) -> dict[str, IndexEntry]:
-    """Copy verified local packs to NS2 and append one index entry last."""
+    """Copy verified local packs to prepared and append one index entry last."""
     identity = publication.identity
     for component in (identity.source, identity.shard, identity.batch):
         if component in ("", ".", "..") or Path(component).name != component or "\\" in component:
@@ -128,13 +128,13 @@ def publish_staged(
     with tempfile.TemporaryDirectory(
         prefix=f".{identity.batch}.", dir=publication.prepared_root,
     ) as temporary:
-        ns2_staging = Path(temporary)
+        prepared_staging = Path(temporary)
         for family in PACK_FAMILIES:
             pack = staged[family]
-            _copy_verified(pack.archive, ns2_staging / f"{family}.tar", pack.pack_sha256)
+            _copy_verified(pack.archive, prepared_staging / f"{family}.tar", pack.pack_sha256)
             _copy_verified(
                 pack.manifest,
-                ns2_staging / f"{family}.tar.manifest.json",
+                prepared_staging / f"{family}.tar.manifest.json",
                 file_sha(pack.manifest),
             )
 
@@ -154,8 +154,8 @@ def publish_staged(
                 destination = publication.prepared_root / relative
                 destination_manifest = destination.with_suffix(".tar.manifest.json")
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                os.replace(ns2_staging / f"{family}.tar", destination)
-                os.replace(ns2_staging / f"{family}.tar.manifest.json", destination_manifest)
+                os.replace(prepared_staging / f"{family}.tar", destination)
+                os.replace(prepared_staging / f"{family}.tar.manifest.json", destination_manifest)
                 entries[family] = {
                     "pack": relative.as_posix(),
                     "pack_sha256": staged[family].pack_sha256,

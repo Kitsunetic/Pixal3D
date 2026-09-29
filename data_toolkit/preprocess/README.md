@@ -9,7 +9,7 @@
   ObjaverseXL_sketchfab/ObjaverseXL_sketchfab-00000/batch000/
 ```
 
-NS3 shared root에 01~05 intermediate를 저장하므로 다른 node가 같은 batch를 이어서 실행하거나 world-size를 바꾸어 재시작할 수 있다. 아주 작은 일시 파일만 필요할 때에는 `/dev/shm/tmp`를 사용할 수 있다. 06은 큰 tar를 각 서버의 로컬 `./data/preprocess_finalize`에 임시 생성하고, 학습 Dataset 검증을 통과한 batch만 기존 NS2 `prepared`에 합친다.
+NS3 shared root에 01~05 intermediate를 저장하므로 다른 node가 같은 batch를 이어서 실행하거나 world-size를 바꾸어 재시작할 수 있다. 아주 작은 일시 파일만 필요할 때에는 `/dev/shm/tmp`를 사용할 수 있다. 06은 큰 tar를 각 서버의 로컬 `./data/preprocess_finalize`에 임시 생성하고, 학습 Dataset 검증을 통과한 batch만 기존 NS4 `prepared`에 합친다.
 
 ## 단계
 
@@ -20,14 +20,14 @@ NS3 shared root에 01~05 intermediate를 저장하므로 다른 node가 같은 b
 | `03_render` | GLB를 조건 뷰로 렌더링 | manifest, GLB | `03_render/renders_cond` |
 | `04_voxelize` | mesh/PBR dump와 camera transform을 voxel로 변환 | dump, render | `04_voxelize/{dual_grid_view_*,pbr_voxels_view_fix_*}` |
 | `05_encode` | shape → SS → PBR encoder를 한 CUDA 프로세스에서 실행. VXZ 입력은 PyTorch Dataset/DataLoader로 prefetch하고, latent 저장은 별도 saver queue/thread가 담당 | voxel | `05_encode/{shape,ss,pbr}` |
-| `06_finalize` | 로컬에서 8개 tar 생성·학습 loader 확인 후 선택적으로 NS2 prepared에 합침 | render, encode | `06_finalize/report.json`, 선택적 `prepared` tar·manifest·index |
+| `06_finalize` | 로컬에서 8개 tar 생성·학습 loader 확인 후 선택적으로 NS4 prepared에 합침 | render, encode | `06_finalize/report.json`, 선택적 `prepared` tar·manifest·index |
 
 `02_dump`는 PBR dump가 이미 보유한 geometry를 재사용하므로 mesh/PBR를 따로 import하거나 triangulate하지 않는다. Blender image extraction과 quantization까지 CPU-only로 수행한다. `03_render`는 dump를 참조하지 않고 rendering만 한다.
 
 ## `prepared` 구조
 
 중간 단계 산출물은 NS3 shared `work_root`에 둔다. `06_finalize --publish`는
-로컬 임시 경로에서 검증한 tar 결과를 기존 NS2 `prepared`에 합친다.
+로컬 임시 경로에서 검증한 tar 결과를 기존 NS4 `prepared`에 합친다.
 한 batch는 아래의 **8개 family tar와 각 tar의 manifest**가 모두 검증된 경우에만 완료다.
 
 ```text
@@ -57,7 +57,7 @@ publish 순서는 다음과 같다. 기존 패커와 같이 tar는 PAX 형식의
 
 1. 로컬 `paths.local_temp_root` 아래에서 8개 tar와 manifest를 생성하고 SHA-256 검증한다.
 2. tar에서 실제 어셋 하나를 꺼내 control metadata의 aesthetic score와 임시 metadata projection으로 7개 학습 설정의 Dataset/DataLoader를 검사한다. 두 view를 각각 직접 읽어 loader의 재귀 재시도에 의한 무한 대기를 피한다. 이 projection은 검사에만 쓰며 tar에 넣지 않는다.
-3. 통과한 tar를 NS2 `prepared` 내부 임시 staging으로 복사하고 checksum을 다시 확인한다.
+3. 통과한 tar를 NS4 `prepared` 내부 임시 staging으로 복사하고 checksum을 다시 확인한다.
 4. source/shard lock 아래에서 기존 batch와 파일 충돌이 없는지 확인한 뒤 8개 family를 발행하고, 기존 index 항목을 보존한 채 새 batch를 마지막에 추가한다.
 
 따라서 `index`에 batch가 기록된 것은 8개 family tar의 발행이 끝났다는 뜻이다.
@@ -80,7 +80,7 @@ v2 설정 해시는 기존 production 설정 해시와 다를 수 있다.
 | --- | --- |
 | `paths.control_root` | control shard와 metadata 입력 경로 |
 | `paths.work_root` | NS3 shared 단계별 작업 출력 루트 (`01`~`06`) |
-| `paths.prepared_root` | 검증된 family tar·manifest·index를 합칠 NS2 `prepared` 경로 |
+| `paths.prepared_root` | 검증된 family tar·manifest·index를 합칠 NS4 `prepared` 경로 |
 | `paths.existing_prepared_root` | 이미 완결된 `prepared/index` batch를 제외하는 경로. 일반적으로 `prepared_root`와 동일 |
 | `paths.local_temp_root` | 06의 로컬 tar·학습 loader 임시 검사 경로. 완료/실패 뒤 batch 임시 디렉터리 삭제 |
 | `raw.root`, `raw.glb_roots` | 압축 해제된 raw GLB tree. 기본값은 새 `glbs_direct`와 archive 밖 기존 direct GLB가 있는 `glbs`를 함께 읽는다 |
@@ -117,7 +117,7 @@ shared index를 재생성한다. archive record가 남은 index는 01 단계가 
 stage는 `batch_index % world_size == rank`가 아니면 실행을 거부한다. 완료 여부와
 관계없이 전체 목록을 기준으로 index를 계산하므로 재시작해도 분할이 변하지 않는다.
 
-중간 산출물은 NS3 shared `work_root`에 남긴다. 다른 node도 같은 완료된 stage 결과를 읽을 수 있다. NS2 `prepared/index`에 완료된 batch는 모든 stage 및 rank launcher가 skip한다.
+중간 산출물은 NS3 shared `work_root`에 남긴다. 다른 node도 같은 완료된 stage 결과를 읽을 수 있다. NS4 `prepared/index`에 완료된 batch는 모든 stage 및 rank launcher가 skip한다.
 
 GPU stage(`03`, `05`)는 `CUDA_VISIBLE_DEVICES`로 정확히 한 device만 지정한다.
 `02_dump`는 CPU-only다.
