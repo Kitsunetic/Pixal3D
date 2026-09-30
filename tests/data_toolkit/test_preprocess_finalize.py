@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
 import json
 from pathlib import Path
 import subprocess
@@ -13,7 +14,13 @@ from PIL import Image
 import yaml
 
 from data_toolkit.pipeline.packing import PACK_FAMILIES, verify_pack
-from data_toolkit.preprocess._common.finalize_packs import BatchIdentity, pack_relative
+from data_toolkit.preprocess._common.finalize_packs import (
+    BatchIdentity,
+    BatchPublication,
+    build_local_packs,
+    pack_relative,
+)
+from data_toolkit.preprocess._common.finalize_publish import publish_staged
 from data_toolkit.preprocess._common.runtime import legacy_prepared_batch_complete
 
 
@@ -119,6 +126,50 @@ def _run(config: Path, *, publish: bool = True) -> subprocess.CompletedProcess[s
         text=True,
         check=False,
     )
+
+
+def test_finalize_hashes_local_metadata_without_checksum_rereads(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    _, work, prepared = _fixture(tmp_path)
+    publication = BatchPublication(
+        identity=BatchIdentity(SOURCE, SHARD, BATCH),
+        work_root=work,
+        prepared_root=prepared,
+        control_root=tmp_path / "control",
+        assets=(ASSET,),
+        batch_assets=(ASSET,),
+        config_hash="test-config",
+        tool_commit="test-commit",
+    )
+
+    from data_toolkit.pipeline import packing
+    from data_toolkit.preprocess._common import finalize_publish
+
+    original_pack_sha = packing.file_sha
+    hashed_packs: set[Path] = set()
+
+    def hash_local_pack_once(path: Path) -> str:
+        if path.suffix == ".tar":
+            assert path not in hashed_packs, f"tar reread for checksum: {path}"
+            hashed_packs.add(path)
+        return original_pack_sha(path)
+
+    monkeypatch.setattr(packing, "file_sha", hash_local_pack_once)
+    staged = build_local_packs(publication, tmp_path / "staging")
+    assert len(hashed_packs) == len(PACK_FAMILIES)
+
+    original_publish_sha = finalize_publish.file_sha
+
+    def hash_local_manifest_only(path: Path) -> str:
+        assert not path.is_relative_to(prepared), f"prepared reread for checksum: {path}"
+        return original_publish_sha(path)
+
+    monkeypatch.setattr(finalize_publish, "file_sha", hash_local_manifest_only)
+    entries = publish_staged(publication, staged)
+    for family, entry in entries.items():
+        assert entry["pack_sha256"] == sha256(staged[family].archive.read_bytes()).hexdigest()
+        assert entry["manifest_sha256"] == sha256(staged[family].manifest.read_bytes()).hexdigest()
 
 
 def test_finalize_publishes_eight_verified_family_tars_when_batch_complete(

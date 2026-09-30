@@ -1,4 +1,4 @@
-"""Build verified legacy-layout batch packs in a local staging directory."""
+"""Build legacy-layout batch packs in a local staging directory."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from data_toolkit.pipeline.atomic_io import atomic_write_json
 from data_toolkit.pipeline.packing import (
     PACK_FAMILIES,
     build_pack,
-    verify_pack,
 )
 
 
@@ -117,7 +116,7 @@ def missing_members(sources: Mapping[str, FamilySource]) -> tuple[Path, ...]:
 
 
 def build_local_packs(publication: BatchPublication, staging_root: Path) -> dict[str, StagedPack]:
-    """Create and verify all eight packs before any prepared write."""
+    """Create all eight packs before any prepared write."""
     sources = family_sources(publication)
     absent = missing_members(sources)
     if absent:
@@ -134,7 +133,6 @@ def build_local_packs(publication: BatchPublication, staging_root: Path) -> dict
             included_asset_sha256s=publication.assets,
         )
         manifest_path = archive.with_suffix(".tar.manifest.json")
-        verify_pack(archive, manifest_path)
         atomic_write_json(
             manifest_path,
             asdict(replace(manifest, validated_at=datetime.now(timezone.utc).isoformat())),

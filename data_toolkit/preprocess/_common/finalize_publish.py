@@ -1,4 +1,4 @@
-"""Publish locally validated batch packs into the shared prepared index."""
+"""Publish locally staged batch packs into the shared prepared index."""
 
 from __future__ import annotations
 
@@ -104,20 +104,18 @@ def _read_index(path: Path, identity: BatchIdentity) -> ShardIndex:
     }
 
 
-def _copy_verified(source: Path, destination: Path, expected_sha256: str) -> None:
+def _copy_staged(source: Path, destination: Path) -> None:
     with source.open("rb") as source_stream, destination.open("xb") as target_stream:
         shutil.copyfileobj(source_stream, target_stream, length=8 * 1024 * 1024)
         target_stream.flush()
         os.fsync(target_stream.fileno())
-    if file_sha(destination) != expected_sha256:
-        raise PublicationError(destination, "prepared staged copy checksum mismatch")
 
 
 def publish_staged(
     publication: BatchPublication,
     staged: Mapping[str, StagedPack],
 ) -> dict[str, IndexEntry]:
-    """Copy verified local packs to prepared and append one index entry last."""
+    """Copy local packs to prepared and append one index entry last."""
     identity = publication.identity
     for component in (identity.source, identity.shard, identity.batch):
         if component in ("", ".", "..") or Path(component).name != component or "\\" in component:
@@ -129,14 +127,12 @@ def publish_staged(
         prefix=f".{identity.batch}.", dir=publication.prepared_root,
     ) as temporary:
         prepared_staging = Path(temporary)
+        manifest_hashes: dict[str, str] = {}
         for family in PACK_FAMILIES:
             pack = staged[family]
-            _copy_verified(pack.archive, prepared_staging / f"{family}.tar", pack.pack_sha256)
-            _copy_verified(
-                pack.manifest,
-                prepared_staging / f"{family}.tar.manifest.json",
-                file_sha(pack.manifest),
-            )
+            manifest_hashes[family] = file_sha(pack.manifest)
+            _copy_staged(pack.archive, prepared_staging / f"{family}.tar")
+            _copy_staged(pack.manifest, prepared_staging / f"{family}.tar.manifest.json")
 
         index_path = publication.prepared_root / "index" / identity.source / f"{identity.shard}.json"
         lock = publication.prepared_root / ".locks" / identity.source / f"{identity.shard}.lock"
@@ -160,7 +156,7 @@ def publish_staged(
                     "pack": relative.as_posix(),
                     "pack_sha256": staged[family].pack_sha256,
                     "manifest": relative.with_suffix(".tar.manifest.json").as_posix(),
-                    "manifest_sha256": file_sha(destination_manifest),
+                    "manifest_sha256": manifest_hashes[family],
                 }
             index["batches"][identity.batch] = entries
             index["batches"] = {
