@@ -170,9 +170,14 @@ def legacy_prepared_batch_complete(
 def completed_batch_reason(
     config: Mapping[str, Any], source: str, shard: str, batch: str,
     prepared_root: Path | None = None,
+    existing_prepared_root: Path | None = None,
 ) -> str | None:
-    if legacy_prepared_batch_complete(config, source, shard, batch, prepared_root):
+    existing_root = existing_prepared_root or Path(config_get(config, "paths", "existing_prepared_root"))
+    if legacy_prepared_batch_complete(config, source, shard, batch, existing_root):
         return "legacy_prepared"
+    output_root = prepared_root or Path(config_get(config, "paths").get("prepared_root", existing_root))
+    if output_root != existing_root and legacy_prepared_batch_complete(config, source, shard, batch, output_root):
+        return "prepared"
     return None
 
 

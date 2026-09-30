@@ -53,6 +53,7 @@ def main() -> int:
     add_rank_arguments(parser)
     parser.add_argument("--manifest", type=Path, default=None)
     parser.add_argument("--prepared-root", type=Path, default=None)
+    parser.add_argument("--existing-prepared-root", type=Path, default=None)
     parser.add_argument("--local-temp-root", type=Path, default=None)
     parser.add_argument("--publish", action="store_true", help="학습 loader 검증 뒤 8개 family tar를 prepared에 합침")
     arguments = parser.parse_args()
@@ -65,7 +66,9 @@ def main() -> int:
     work_root = resolve_work_root(arguments, config)
     output = stage_root(work_root, "06", "finalize")
     skip_reason = completed_batch_reason(
-        config, arguments.source, arguments.shard, arguments.batch, prepared_root,
+        config, arguments.source, arguments.shard, arguments.batch,
+        prepared_root=prepared_root,
+        existing_prepared_root=arguments.existing_prepared_root,
     )
     if skip_reason is not None:
         report = {

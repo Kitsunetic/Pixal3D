@@ -80,6 +80,8 @@ def main() -> int:
     parser.add_argument("--rank", type=int, required=True)
     parser.add_argument("--stages", default=",".join(STAGES))
     parser.add_argument("--publish", action="store_true", help="06 단계에서 학습 loader 검증 뒤 prepared에 합침")
+    parser.add_argument("--existing-prepared-root", type=Path, default=None)
+    parser.add_argument("--prepared-root", type=Path, default=None)
     parser.add_argument("--encode-min-shape-1024-voxels", type=int, default=None)
     parser.add_argument("--encode-max-shape-1024-voxels", type=int, default=None)
     parser.add_argument("--encode-partition-name", default=None)
@@ -114,7 +116,11 @@ def main() -> int:
     root = Path(__file__).resolve().parents[3]
     processed = skipped = soft_failed = 0
     for batch_index, shard, batch in owned:
-        reason = completed_batch_reason(config, source, shard, batch)
+        reason = completed_batch_reason(
+            config, source, shard, batch,
+            prepared_root=arguments.prepared_root,
+            existing_prepared_root=arguments.existing_prepared_root,
+        )
         if reason is not None:
             skipped += 1
             print(f"skip {batch_index} {shard}/{batch}: {reason}", flush=True)
@@ -143,6 +149,10 @@ def main() -> int:
                 command.append("--build-index")
             if stage == "06" and arguments.publish:
                 command.append("--publish")
+            if stage == "06" and arguments.existing_prepared_root is not None:
+                command.extend(["--existing-prepared-root", str(arguments.existing_prepared_root)])
+            if stage == "06" and arguments.prepared_root is not None:
+                command.extend(["--prepared-root", str(arguments.prepared_root)])
             if stage == "05" and encode_partitioned:
                 command.extend([
                     "--partition-name", arguments.encode_partition_name,

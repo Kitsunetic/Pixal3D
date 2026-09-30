@@ -128,6 +128,54 @@ def _run(config: Path, *, publish: bool = True) -> subprocess.CompletedProcess[s
     )
 
 
+def _run_rank(config: Path, snapshot: Path, local_prepared: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable, str(RANK_PROGRAM), "--config", str(config),
+            "--world-size", "1", "--rank", "0", "--stages", "06", "--publish",
+            "--existing-prepared-root", str(snapshot),
+            "--prepared-root", str(local_prepared),
+        ],
+        cwd=REPOSITORY, capture_output=True, text=True, check=False,
+    )
+
+
+def test_rank_launcher_skips_batch_from_legacy_index_snapshot(tmp_path: Path) -> None:
+    config, _, ns4_prepared = _fixture(tmp_path)
+    snapshot = tmp_path / "legacy-index-snapshot"
+    index_path = snapshot / "index" / SOURCE / f"{SHARD}.json"
+    index_path.parent.mkdir(parents=True)
+    index_path.write_text(json.dumps({
+        "gate": "production", "source": SOURCE, "shard_id": SHARD,
+        "batches": {BATCH: {family: {} for family in PACK_FAMILIES}},
+    }))
+    ns3_prepared = tmp_path / "ns3-prepared"
+
+    result = _run_rank(config, snapshot, ns3_prepared)
+
+    assert result.returncode == 0, result.stderr
+    assert f"skip 0 {SHARD}/{BATCH}: legacy_prepared" in result.stdout
+    assert not ns3_prepared.exists()
+    assert not ns4_prepared.exists()
+
+
+def test_rank_launcher_resumes_from_local_prepared_index(tmp_path: Path) -> None:
+    config, work, ns4_prepared = _fixture(tmp_path)
+    snapshot = tmp_path / "legacy-index-snapshot"
+    ns3_prepared = tmp_path / "ns3-prepared"
+
+    first = _run_rank(config, snapshot, ns3_prepared)
+    index_path = ns3_prepared / "index" / SOURCE / f"{SHARD}.json"
+    second = _run_rank(config, snapshot, ns3_prepared)
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    assert json.loads(index_path.read_text())["batches"].keys() == {BATCH}
+    assert f"skip 0 {SHARD}/{BATCH}: prepared" in second.stdout
+    assert json.loads((work / "06_finalize/report.json").read_text())["prepared_path"] == str(ns3_prepared)
+    assert not ns4_prepared.exists()
+
+
 def test_finalize_hashes_local_metadata_without_checksum_rereads(
     tmp_path: Path, monkeypatch,
 ) -> None:
